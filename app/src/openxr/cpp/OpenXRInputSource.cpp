@@ -5,6 +5,9 @@
 #include "DeviceUtils.h"
 #include "SystemUtils.h"
 #include "DeviceDelegate.h"
+#if defined(QIYU)
+#include "QiyuControllerBridge.h"
+#endif
 
 #define HAND_JOINT_FOR_AIM XR_HAND_JOINT_MIDDLE_PROXIMAL_EXT
 
@@ -75,6 +78,13 @@ XrResult OpenXRInputSource::Initialize()
     // Huawei glasses can be attached to multiple phones, so we can't filter by device type.
     bool systemIs6DoF = mSystemProperties.trackingProperties.positionTracking == XR_TRUE;
     mDeviceType = systemIs6DoF ? device::HVR6DoF : device::HVR3DoF;
+#elif defined(QIYU)
+    mDeviceType = DeviceUtils::GetDeviceTypeFromSystem();
+    // QIYU build: if system detection is unavailable, keep device-specific mappings usable
+    // by matching any QIYU mapping when the active profile resolves later via qiyu bridge/fallback.
+    if (mDeviceType == device::UnknownType) {
+        mDeviceType = device::Qiyu3;
+    }
 #else
     mDeviceType = DeviceUtils::GetDeviceTypeFromSystem();
 #endif
@@ -134,26 +144,35 @@ XrResult OpenXRInputSource::Initialize()
         handTrackerInfo.hand = (mHandeness == OpenXRHandFlags::Right) ? XR_HAND_RIGHT_EXT : XR_HAND_LEFT_EXT;
         handTrackerInfo.handJointSet = XR_HAND_JOINT_SET_DEFAULT_EXT;
 
-        RETURN_IF_XR_FAILED(OpenXRExtensions::sXrCreateHandTrackerEXT(mSession, &handTrackerInfo,
-                                                                      &mHandTracker));
-
-        mSupportsHandJointsMotionRangeInfo = OpenXRExtensions::IsExtensionSupported(XR_EXT_HAND_JOINTS_MOTION_RANGE_EXTENSION_NAME);
-        mSupportsFBHandTrackingAim = OpenXRExtensions::IsExtensionSupported(XR_FB_HAND_TRACKING_AIM_EXTENSION_NAME);
-
-        if (!mIsHandInteractionSupported) {
-            if (mSupportsFBHandTrackingAim) {
-                mGestureManager = std::make_unique<OpenXRGestureManagerFBHandTrackingAim>();
-            } else {
-                // TODO: fine tune params for different devices.
-                OpenXRGestureManagerHandJoints::OneEuroFilterParams params= { 0.25, 1, 1 };
-                mGestureManager = std::make_unique<OpenXRGestureManagerHandJoints>(mHandJoints, &params);
-            }
-            VRB_LOG("OpenXR: using %s to compute hands aim", mSupportsFBHandTrackingAim ? XR_FB_HAND_TRACKING_AIM_EXTENSION_NAME : "hand joints");
+        // Some runtimes advertise XR_EXT_hand_tracking but reject tracker creation
+        // (e.g. the Qiyu Dream/VR700 runtime returns XR_ERROR_FEATURE_UNSUPPORTED).
+        // Treat that as "hand tracking unavailable" instead of failing the whole
+        // input source, which would leave the controllers uninitialized.
+        const XrResult handTrackerResult = OpenXRExtensions::sXrCreateHandTrackerEXT(mSession, &handTrackerInfo,
+                                                                                    &mHandTracker);
+        if (XR_FAILED(handTrackerResult)) {
+            VRB_WARN("OpenXR: xrCreateHandTrackerEXT failed (%d); continuing without hand tracking",
+                     static_cast<int>(handTrackerResult));
+            mHandTracker = XR_NULL_HANDLE;
         } else {
-            if (OpenXRExtensions::IsExtensionSupported(XR_EXT_HAND_INTERACTION_EXTENSION_NAME)) {
-                VRB_LOG("OpenXR: using %s to compute hands aim", XR_EXT_HAND_INTERACTION_EXTENSION_NAME);
-            } else if (OpenXRExtensions::IsExtensionSupported(XR_MSFT_HAND_INTERACTION_EXTENSION_NAME)) {
-                VRB_LOG("OpenXR: using %s to compute hands aim", XR_MSFT_HAND_INTERACTION_EXTENSION_NAME);
+            mSupportsHandJointsMotionRangeInfo = OpenXRExtensions::IsExtensionSupported(XR_EXT_HAND_JOINTS_MOTION_RANGE_EXTENSION_NAME);
+            mSupportsFBHandTrackingAim = OpenXRExtensions::IsExtensionSupported(XR_FB_HAND_TRACKING_AIM_EXTENSION_NAME);
+
+            if (!mIsHandInteractionSupported) {
+                if (mSupportsFBHandTrackingAim) {
+                    mGestureManager = std::make_unique<OpenXRGestureManagerFBHandTrackingAim>();
+                } else {
+                    // TODO: fine tune params for different devices.
+                    OpenXRGestureManagerHandJoints::OneEuroFilterParams params= { 0.25, 1, 1 };
+                    mGestureManager = std::make_unique<OpenXRGestureManagerHandJoints>(mHandJoints, &params);
+                }
+                VRB_LOG("OpenXR: using %s to compute hands aim", mSupportsFBHandTrackingAim ? XR_FB_HAND_TRACKING_AIM_EXTENSION_NAME : "hand joints");
+            } else {
+                if (OpenXRExtensions::IsExtensionSupported(XR_EXT_HAND_INTERACTION_EXTENSION_NAME)) {
+                    VRB_LOG("OpenXR: using %s to compute hands aim", XR_EXT_HAND_INTERACTION_EXTENSION_NAME);
+                } else if (OpenXRExtensions::IsExtensionSupported(XR_MSFT_HAND_INTERACTION_EXTENSION_NAME)) {
+                    VRB_LOG("OpenXR: using %s to compute hands aim", XR_MSFT_HAND_INTERACTION_EXTENSION_NAME);
+                }
             }
         }
     }
@@ -804,6 +823,15 @@ void OpenXRInputSource::Update(const XrFrameState& frameState, XrSpace localSpac
 #endif
     if (isControllerUnavailable || mUsingHandInteractionProfile || mustAlwaysCheckHandTracking) {
         if (!handTrackingEnabled) {
+#if defined(QIYU)
+            if (QiyuControllerBridge::Instance().ApplyControllerState(
+                    mIndex, mHandeness == OpenXRHandFlags::Left, renderMode, delegate)) {
+                device::CapabilityFlags flags = device::Orientation | device::Position | device::PositionEmulated;
+                delegate.SetCapabilityFlags(mIndex, flags);
+                UpdateHaptics(delegate);
+                return;
+            }
+#endif
             delegate.SetEnabled(mIndex, false);
             return;
         }
@@ -821,12 +849,32 @@ void OpenXRInputSource::Update(const XrFrameState& frameState, XrSpace localSpac
             handFacesHead = OpenXRGestureManager::handFacesHead(jointTransforms[HAND_JOINT_FOR_AIM], head);
             delegate.SetHandJointLocations(mIndex, std::move(jointTransforms), std::move(jointRadii));
         } else if (isControllerUnavailable) {
+#if defined(QIYU)
+            if (QiyuControllerBridge::Instance().ApplyControllerState(
+                    mIndex, mHandeness == OpenXRHandFlags::Left, renderMode, delegate)) {
+                device::CapabilityFlags flags = device::Orientation | device::Position | device::PositionEmulated;
+                delegate.SetCapabilityFlags(mIndex, flags);
+                UpdateHaptics(delegate);
+                return;
+            }
+#endif
             delegate.SetEnabled(mIndex, false);
             return;
         }
     }
 
     if (!mActiveMapping) {
+#if defined(QIYU)
+        // Qiyu X and some QIYU runtimes may not expose a complete OpenXR controller profile.
+        // Fall back to the QIYU native controller bridge (qiyuapi) when available.
+        if (QiyuControllerBridge::Instance().ApplyControllerState(
+                mIndex, mHandeness == OpenXRHandFlags::Left, renderMode, delegate)) {
+            device::CapabilityFlags flags = device::Orientation | device::Position | device::PositionEmulated;
+            delegate.SetCapabilityFlags(mIndex, flags);
+            UpdateHaptics(delegate);
+            return;
+        }
+#endif
         delegate.SetEnabled(mIndex, false);
         return;
     }

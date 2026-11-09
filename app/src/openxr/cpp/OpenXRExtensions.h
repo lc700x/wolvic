@@ -12,6 +12,7 @@ namespace crow {
   class OpenXRExtensions {
   public:
     static void Initialize();
+    static bool IsRuntimeAvailable();
     static void LoadExtensions(XrInstance instance);
     static bool IsExtensionSupported(const char*);
     static void LoadApiLayers(XrInstance instance);
@@ -48,5 +49,6 @@ namespace crow {
   private:
      static std::unordered_set<std::string> sSupportedExtensions;
      static std::unordered_set<std::string> sSupportedApiLayers;
+     static bool sRuntimeAvailable;
   };
 } // namespace crow

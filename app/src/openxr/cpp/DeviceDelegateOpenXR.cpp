@@ -129,8 +129,9 @@ struct DeviceDelegateOpenXR::State {
   bool shouldUsePassthrough { false };
 
   bool IsPositionTrackingSupported() {
-      CHECK(system != XR_NULL_SYSTEM_ID);
-      CHECK(instance != XR_NULL_HANDLE);
+      // No runtime (e.g. Qiyu MIX without OpenXR broker): treat as unsupported instead of throwing.
+      if (system == XR_NULL_SYSTEM_ID || instance == XR_NULL_HANDLE)
+          return false;
       return systemProperties.trackingProperties.positionTracking == XR_TRUE;
   }
 
@@ -155,6 +156,15 @@ struct DeviceDelegateOpenXR::State {
 
     // Initialize the XrInstance
     OpenXRExtensions::Initialize();
+
+    if (!OpenXRExtensions::IsRuntimeAvailable()) {
+        // Qiyu MIX (A081) has no OpenXR runtime in this firmware. Do not attempt instance
+        // creation (it would throw XR_ERROR_RUNTIME_UNAVAILABLE -> SIGABRT crash loop).
+        // Reference Wolvic debug (DeviceDelegateQiyu native path) works on MIX except WebXR;
+        // our OpenXR path cannot provide VR here, so degrade gracefully (no crash).
+        VRB_ERROR("OpenXR runtime not available on this device; VR disabled (MIX fallback)");
+        return;
+    }
 
     std::vector<const char *> extensions {
       XR_KHR_ANDROID_CREATE_INSTANCE_EXTENSION_NAME,
@@ -193,8 +203,14 @@ struct DeviceDelegateOpenXR::State {
       extensions.push_back(XR_FB_COMPOSITION_LAYER_IMAGE_LAYOUT_EXTENSION_NAME);
     }
 #endif
+#if defined(OCULUSVR) || defined(PFDMXR)
     if (OpenXRExtensions::IsExtensionSupported(XR_KHR_COMPOSITION_LAYER_COLOR_SCALE_BIAS_EXTENSION_NAME))
         extensions.push_back(XR_KHR_COMPOSITION_LAYER_COLOR_SCALE_BIAS_EXTENSION_NAME);
+#else
+    // QIYU/VR700 Monado enables this extension but expects an explicit scale/bias in the
+    // layer chain; leaving it enabled without setting it causes vertical shading/shadow
+    // bands on top of the SXR timewarp. Disable it outside Oculus paths.
+#endif
 
     if (OpenXRExtensions::IsExtensionSupported(XR_FB_PASSTHROUGH_EXTENSION_NAME)) {
       extensions.push_back(XR_FB_PASSTHROUGH_EXTENSION_NAME);
@@ -457,12 +473,20 @@ struct DeviceDelegateOpenXR::State {
       VRB_LOG("OpenXR: selected passthrough blend mode %s", to_string(passthroughBlendMode));
   }
 
+  float EyeScale() const {
+    // Reverted per user: restored full recommended eye resolution on all devices.
+    // (0.85x Qiyu scale removed: sharper geometry, but SXR warp starvation may return.)
+    return 1.0f;
+  }
+
   void InitializeImmersiveDisplay() {
     CHECK(immersiveDisplay);
     CHECK(viewConfig.size() > 0);
 
     immersiveDisplay->SetDeviceName(systemProperties.systemName);
-    immersiveDisplay->SetEyeResolution(viewConfig.front().recommendedImageRectWidth, viewConfig.front().recommendedImageRectHeight);
+    const float scale = EyeScale();
+    immersiveDisplay->SetEyeResolution((uint32_t)(viewConfig.front().recommendedImageRectWidth * scale),
+                                       (uint32_t)(viewConfig.front().recommendedImageRectHeight * scale));
     immersiveDisplay->SetSittingToStandingTransform(vrb::Matrix::Translation(kAverageHeight));
     auto toDeviceBlendModes = [](std::vector<XrEnvironmentBlendMode> aOpenXRBlendModes) {
         std::vector<device::BlendMode> deviceBlendModes;
@@ -523,8 +547,9 @@ struct DeviceDelegateOpenXR::State {
     CHECK(viewConfig.size() > 0);
 
     if (w == 0 || h == 0) {
-      w = viewConfig.front().recommendedImageRectWidth;
-      h = viewConfig.front().recommendedImageRectHeight;
+      const float scale = EyeScale();
+      w = (uint32_t)(viewConfig.front().recommendedImageRectWidth * scale);
+      h = (uint32_t)(viewConfig.front().recommendedImageRectHeight * scale);
     }
 
     XrSwapchainCreateInfo info{XR_TYPE_SWAPCHAIN_CREATE_INFO};
@@ -542,9 +567,14 @@ struct DeviceDelegateOpenXR::State {
 
   vrb::FBO::Attributes GetFBOAttributes() const {
     vrb::FBO::Attributes attributes;
+    // QIYU VR700/MIX: 4x MSAA at 1465x1536 per eye (~18M samples/frame at 72 Hz) starves the
+    // SXR timewarp (No valid frame to warp -> moving vertical white bands). Drop MSAA on QIYU.
+    const bool isQiyu = deviceType == device::Qiyu3 || deviceType == device::QiyuDream ||
+                        deviceType == device::QiyuDreamPro || deviceType == device::QiyuMix ||
+                        deviceType == device::QiyuX;
     if (renderMode == device::RenderMode::StandAlone) {
       attributes.depth = true;
-      attributes.samples = 4;
+      attributes.samples = isQiyu ? 0 : 4;
     } else {
       attributes.depth = false;
       attributes.samples = 0;
@@ -727,7 +757,13 @@ struct DeviceDelegateOpenXR::State {
       if (!OpenXRExtensions::IsExtensionSupported(XR_EXT_PERFORMANCE_SETTINGS_EXTENSION_NAME))
           return;
 
-      if (renderMode == device::RenderMode::StandAlone && minCPULevel == device::CPULevel::Normal) {
+      // QIYU VR700/MIX: force SUSTAINED_HIGH or the 1465x1536 eye buffers miss the 72 Hz
+      // budget and PerformanceMonitor drops to ~61 Hz, while the SXR timewarp then has
+      // "No valid frame to warp" gaps (white fill + dropped-frame artifacts in log 6).
+      const bool isQiyu = deviceType == device::Qiyu3 || deviceType == device::QiyuDream ||
+                          deviceType == device::QiyuDreamPro || deviceType == device::QiyuMix ||
+                          deviceType == device::QiyuX;
+      if (renderMode == device::RenderMode::StandAlone && minCPULevel == device::CPULevel::Normal && !isQiyu) {
           CHECK_XRCMD(OpenXRExtensions::sXrPerfSettingsSetPerformanceLevelEXT(session, XR_PERF_SETTINGS_DOMAIN_CPU_EXT, XR_PERF_SETTINGS_LEVEL_SUSTAINED_LOW_EXT));
           CHECK_XRCMD(OpenXRExtensions::sXrPerfSettingsSetPerformanceLevelEXT(session, XR_PERF_SETTINGS_DOMAIN_GPU_EXT, XR_PERF_SETTINGS_LEVEL_SUSTAINED_LOW_EXT));
       } else {
@@ -755,6 +791,13 @@ struct DeviceDelegateOpenXR::State {
         suggestedRefreshRate = 90.0;
         break;
       case device::OculusQuest:
+      case device::Qiyu3:
+      case device::QiyuDream:
+      case device::QiyuDreamPro:
+      case device::QiyuMix:
+      case device::QiyuX:
+        // QIYU displays report 72/90 Hz; 72 is the safe base. Requesting 90 (compositor
+        // default in log 6) with a 61 Hz app pipeline causes SXR warp dropped frames.
         suggestedRefreshRate = 72.0;
         break;
       default:
@@ -762,14 +805,17 @@ struct DeviceDelegateOpenXR::State {
         break;
     }
 
-    // Selects the first available refresh rate equal or higher than the desired one. Note that
-    // OpenXR returns the refresh rates sorted from lowest to highest.
+    // Select closest available refresh rate (Monado VR700 returns [90,72] descending, while
+    // the original "first >= suggested" helper would return 90 when we ask for 72, leaving
+    // the 61 Hz app pipeline vs 90 Hz compositor mismatch that causes SXR white-fill/judder).
     auto selectValidRefreshRate = [refreshRates = this->refreshRates](const float suggestedRefreshRate) {
-      auto it = std::find_if(refreshRates.begin(), refreshRates.end(),
-   [&suggestedRefreshRate](const float& refreshRate) { return refreshRate >= suggestedRefreshRate;});
-      if (it == refreshRates.end())
-        return refreshRates.back();
-      return *it;
+      float best = refreshRates.front();
+      float bestDiff = std::abs(best - suggestedRefreshRate);
+      for (auto rate : refreshRates) {
+        float diff = std::abs(rate - suggestedRefreshRate);
+        if (diff < bestDiff) { best = rate; bestDiff = diff; }
+      }
+      return best;
     };
 
     float selectedRefreshRate = selectValidRefreshRate(suggestedRefreshRate);
@@ -1617,6 +1663,11 @@ bool DeviceDelegateOpenXR::PopulateTrackedKeyboardInfo(DeviceDelegate::TrackedKe
 
 void
 DeviceDelegateOpenXR::EnterVR(const crow::BrowserEGLContext& aEGLContext) {
+  // No OpenXR runtime (Qiyu MIX): stay out of VR instead of CHECK-throwing on null instance.
+  if (m.instance == XR_NULL_HANDLE || m.system == XR_NULL_SYSTEM_ID) {
+      VRB_WARN("OpenXR EnterVR skipped: no instance/system (runtime unavailable)");
+      return;
+  }
   // Reset reorientation after Enter VR
   m.reorientMatrix = vrb::Matrix::Identity();
   m.firstPose = std::nullopt;
@@ -1786,7 +1837,9 @@ DeviceDelegateOpenXR::UpdatePassthrough() {
 
 unsigned
 DeviceDelegateOpenXR::MaxCompositionLayers() const {
-  CHECK(m.instance != XR_NULL_HANDLE && m.system != XR_NULL_SYSTEM_ID);
+  // MIX fallback: no OpenXR instance -> report a single layer instead of CHECK-crashing.
+  if (m.instance == XR_NULL_HANDLE || m.system == XR_NULL_SYSTEM_ID)
+    return 1;
   // Even if the runtime supports multiple layers, do not report them if the Android surface
   // swapchain extension is not available, because we won't be able to create the swapchains
   return m.layersEnabled ? m.systemProperties.graphicsProperties.maxLayerCount : 1;

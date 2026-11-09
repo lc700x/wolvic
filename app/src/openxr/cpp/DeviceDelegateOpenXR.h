@@ -73,12 +73,12 @@ public:
   void TogglePassthroughEnabled() override;
   // Custom methods for NativeActivity render loop based devices.
   void BeginXRSession();
-  void EnterVR(const crow::BrowserEGLContext& aEGLContext);
-  void LeaveVR();
-  void OnDestroy();
-  bool IsInVRMode() const;
-  bool ExitApp();
-  bool ShouldExitRenderLoop() const;
+  void EnterVR(const crow::BrowserEGLContext& aEGLContext) override;
+  void LeaveVR() override;
+  void OnDestroy() override;
+  bool IsInVRMode() const override;
+  bool ExitApp() override;
+  bool ShouldExitRenderLoop() const override;
   void SetImmersiveBlendMode(device::BlendMode) override;
   float GetSelectThreshold(int32_t controllerIndex) override;
   unsigned MaxCompositionLayers() const override;

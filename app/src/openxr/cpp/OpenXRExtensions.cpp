@@ -29,10 +29,25 @@ PFN_xrEnumerateRenderModelPathsFB OpenXRExtensions::sXrEnumerateRenderModelPaths
 PFN_xrGetRenderModelPropertiesFB OpenXRExtensions::sXrGetRenderModelPropertiesFB = nullptr;
 PFN_xrLoadRenderModelFB OpenXRExtensions::sXrLoadRenderModelFB = nullptr;
 
+bool OpenXRExtensions::sRuntimeAvailable = true;
+
+bool OpenXRExtensions::IsRuntimeAvailable() {
+    return sRuntimeAvailable;
+}
+
 void OpenXRExtensions::Initialize() {
     // Extensions.
+    // On Qiyu MIX (A081) there is no OpenXR runtime broker installed; the loader returns
+    // XR_ERROR_RUNTIME_UNAVAILABLE here. Do NOT throw (uncaught -> SIGABRT crash loop seen
+    // in log 4 on MIX). Mark runtime unavailable and return so the delegate can degrade.
     uint32_t extensionCount { 0 };
-    CHECK_XRCMD(xrEnumerateInstanceExtensionProperties(nullptr, 0, &extensionCount, nullptr))
+    XrResult extResult = xrEnumerateInstanceExtensionProperties(nullptr, 0, &extensionCount, nullptr);
+    if (extResult == XR_ERROR_RUNTIME_UNAVAILABLE) {
+        VRB_ERROR("OpenXR runtime unavailable (XR_ERROR_RUNTIME_UNAVAILABLE); VR will be disabled");
+        sRuntimeAvailable = false;
+        return;
+    }
+    CHECK_XRCMD(extResult)
 
     std::vector<XrExtensionProperties> extensions(extensionCount, { XR_TYPE_EXTENSION_PROPERTIES } );
 
@@ -67,7 +82,12 @@ void OpenXRExtensions::Initialize() {
 
     // API layers.
     uint32_t apiLayersCount;
-    CHECK_XRCMD(xrEnumerateApiLayerProperties(0, &apiLayersCount, nullptr));
+    XrResult layersResult = xrEnumerateApiLayerProperties(0, &apiLayersCount, nullptr);
+    if (layersResult == XR_ERROR_RUNTIME_UNAVAILABLE) {
+        VRB_ERROR("OpenXR runtime unavailable while enumerating API layers; continuing without layers");
+        return;
+    }
+    CHECK_XRCMD(layersResult);
 
     std::vector<XrApiLayerProperties> apiLayers(apiLayersCount, { XR_TYPE_API_LAYER_PROPERTIES });
     CHECK_XRCMD(xrEnumerateApiLayerProperties((uint32_t) apiLayers.size(), &apiLayersCount, apiLayers.data()));
