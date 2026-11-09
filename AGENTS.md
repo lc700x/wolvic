@@ -1,0 +1,66 @@
+# Wolvic agent notes
+
+Wolvic is an Android XR browser (Java/Kotlin + C++/CMake) with multiple backends and device platforms. Trust Gradle/config/scripts over README prose when they disagree.
+
+## Key commands (Windows: `gradlew.bat`; CI uses `./gradlew`)
+
+- Build (examples from CI): `./gradlew assembleNoapiArm64GeckoGeneric`, `./gradlew assembleNoapiX64GeckoGeneric` (external/no-device SDK path).
+- Unit tests (CI): `./gradlew testNoapiArm64GeckoGenericDebugUnitTest` and `./gradlew testNoapiX64GeckoGenericReleaseUnitTest`.
+- Internal/device flavors follow the same task shape: `assemble<Platform><Abi><Backend><Store>` (see `.github/workflows/ci-internal.yaml` matrix).
+- CI environment: JDK 21, Gradle 8.13 (`.github/workflows/build.yml`). Android toolchain in `app/build.gradle` uses Java 21 toolchain / Java 11 source+target; `compileSdk 36`, `minSdk 26` (flavor-dependent), AGP from `gradle/libs.versions.toml`.
+
+## Build matrix (high signal)
+
+Defined in `app/build.gradle` with `flavorDimensions = [platform, abi, backend, store]`:
+- Platforms: `oculusvr`, `picoxr`, `pfdmxr`, `qiyu`, `lynx`, `spaces`, `aosp`, `hvr`, `noapi`, `visionglass`.
+- ABIs: `arm64` (`arm64-v8a`), `x64` (`x86_64`). `x64` variants are only built for `noapi` and `aosp`.
+- Backends: `gecko` (default), `chromium`, `webkit`. `chromium`/`webkit` variants exist only when local AAR paths are set in `local.properties` (`chromium_aar` / `webkit_aar`; see `isChromiumAvailable`/`isWebKitAvailable`).
+- Stores: `generic`, `metaStore` (Oculus only), `mainlandChina` (HVR/VisionGlass/PicoXR/Qiyu only), `magicleap` (AOSP x64 only).
+- Some flavors override `applicationId`/suffix, manifests, resources, and `BuildConfig` (notably China/homepage/speech services in the variant loop at end of `app/build.gradle`).
+
+## Local config (gitignored; do not commit)
+
+- `local.properties`: SDK paths plus Wolvic-specific keys read by `settings.gradle` into `gradle.ext` as `localProperties.*`. Used for backend AARs and GeckoView dependency substitution (`dependencySubstitutions.geckoviewTopsrcdir`, `geckoviewTopobjdir`, `geckoviewTopobjdirX64`). Deprecated `geckoViewLocalArm`/`geckoViewLocalX86` properties throw.
+- `user.properties`: loaded by `settings.gradle` as `userProperties.*` (values are logged). Known flags in build logic include `simultaneousDevProduction`, `useDebugSigningOnRelease`, `useStaticVersionCode`, `disableCrashRestart`, `HVR_APP_ID`, `otelEndpoint`, `enableServo` (`:servo` module included only when enabled). Treat as local/dev-only.
+- Secrets/tokens/artifacts to keep out of commits: `.mls_token` (read into `BuildConfig.MLS_TOKEN`), `app/agconnect-services.json`, `*.jks`, `oculussig_*`, `third_party/` contents as applicable.
+
+## Repo structure / non-obvious layout
+
+- `app/` is the main Android module. `settings.gradle` includes only `:app` (+ optional `:servo`).
+- Main Java/Kotlin source dirs are unconventional (`app/build.gradle`): `app`, `src/common/shared`, `src/main/cpp/vrb/android/java`; plus flavor/variant dirs such as `src/common/gecko|chromium|webkit`, `src/openxr/...`, platform dirs (`src/oculusvr`, `src/hvr`, `src/picoxr`, `src/qiyu`, `src/aosp`, `src/noapi`, `src/visionglass`, etc.), store/China dirs, and debug/release manifest overlays.
+- Native code: `app/CMakeLists.txt` builds shared library `native-lib` and links `vrb`. Platform/feature flags (`NOAPI`, `VISIONGLASS`, `HVR`, `AOSP`, `OPENXR`, `OCULUSVR`, `SPACES`, `QIYU`, `LYNX`, `PICOXR`, etc.) select C++ sources and loaders. OpenXR headers come from Gradle `OpenXR::headers`; loader strategy differs by platform (some copy loaders from `third_party/`).
+- C++ submodules are declared in `.gitmodules` under `app/src/main/cpp/`: `vrb`, `tinygltf` (`igalia.com/wolvic` branch), `KTX-Software` (`4.2`). `third_party/` is a separate gitignored checkout for proprietary/device SDKs; CI pins it via `third_party_hash` (`.github/workflows/build.yml`).
+
+## Backend/runtime gotchas
+
+- Gecko/WebXR: prebuilt GeckoView Maven artifacts do not include Wolvic's required WebXR protocol changes (README). WebXR work typically needs local GeckoView substitution and matching patches (`CHROMIUM.md`/README/wiki point to external repos/process). Gecko branch in `app/build.gradle` is `nightly` by default.
+- Chromium backend is not a normal local Gradle-only build: it requires building/fixing AARs and copying assets from an external Chromium checkout (`CHROMIUM.md`). Only then do Chromium variants appear.
+- Gecko config check: `app/src/main/res/raw/fxr_config.yaml` must end with a newline because runtime code appends prefs; `tools/gradle/checkGeckoConfigFile.gradle` enforces this for Gecko variants on preBuild. If you edit that file, preserve the trailing newline.
+- Versioning: `tools/gradle/versionCode.gradle` generates a time-based `versionCode` by default (prints it during config). `userProperties.useStaticVersionCode=true` overrides; PicoXR store builds apply a store-specific offset.
+
+## Qiyu platform (QIYU 3 / Dream / Dream Pro / Lenovo Legion VR700 / MIX / Qiyu X)
+
+- Variant shape: `assembleQiyuArm64GeckoGeneric[Debug|Release]` (and `MainlandChina` store). Platform is OpenXR (`-DQIYU -DOPENXR`), arm64-only by current filters.
+- Qiyu Native SDK (ALVR-compatible family; Qiyu_Native_SDK_v1.0.0, `libqiyuapi.so` / `qiyu_GetControllerData(left,right)`) is loaded from `localProperties.qiyuSdkDir`/`qiyu_sdk_dir` or `third_party/qiyu` (`Include/` + `Lib/*release*.aar`: `qiyuapi`, `qiyivrsdkcore`, `sxrApi`). `third_party/` is gitignored; do not commit SDK binaries.
+- Controller bridge (ALVR/alvr-openxr-v20 patterns): Qiyu `PlatformActivity` loads `qiyivrsdkcore/sxrapi/ashreader/qiyuapi` via `System.loadLibrary` **before** `NativeActivity` starts OpenXR, so the app classloader owns `libsxrapi.so` first (important on the Monado/VR700 runtime). It then stores the Activity and enables the bridge only on Qiyu X. `app/src/qiyu/cpp/QiyuControllerBridge.*` (hooked in `OpenXRInputSource.cpp` under `QIYU`) calls `qiyu_Init` lazily on the first controller/haptic update after the OpenXR session is up (no `qiyu_StartVR`, to avoid OpenXR session conflict) and polls `qiyu_GetControllerData` as fallback for incomplete OpenXR controller input. It can also apply qiyuapi pose/haptics when available.
+- Single-APK build (important): the default Qiyu build packages the Qiyu SDK AARs/classes/native libs and sets `BuildConfig.QIYU_CONTROLLER_BRIDGE=true`, so one APK covers QIYU 3/Dream/Dream Pro/MIX/VR700/Qiyu X (ALVR-style). On Dream/VR700 the runtime's SXR stack provides display/controllers; the app's `SxrApi` is present but is initialized only after the app libs are already loaded, so it no longer shadows the runtime's `sxrInitialize`. `-PqiyuControllerBridge=false` builds the old pure-OpenXR APK (no SDK classes/libs) as a fallback.
+- `app/src/qiyu/AndroidManifest.xml` must keep `WAKE_LOCK` (with `tools:node="replace"`) or `OffscreenDisplay`/`Presentation` crashes on launch. Qiyu Dream firmware `A091` (and `iQIYI-A6*`, `Lenovo Legion VR700`) maps to `device::QiyuDream` in `DeviceUtils.cpp`.
+- Device detection includes Qiyu/IQIYI model heuristics and Lenovo Legion VR700/Dream-series mapping. Real-device validation is required (hallychou/ALVR-QIYU used full SXR rendering for Dream/VR700/QIYU 3; Wolvic uses OpenXR and depends on the device/runtime OpenXR path plus the controller bridge).
+- Native builds require initialized submodules (`git submodule update --init --recursive` for `app/src/main/cpp/{vrb,tinygltf,KTX-Software}` and vrb deps).
+
+## Lessons learned on device (Qiyu X / MIX / Dream) — do not repeat these
+
+- **Never strip `com.qualcomm.**` / `com.qiyi.**` from ProGuard/R8 on Qiyu.** SXR's native `sxrInitialize()` resolves `com/qualcomm/sxrapi/SxrApi` with JNI `FindClass`. If R8 removes it you get `Failed to initialzie SxrApi Java class` -> `@qiyu_Init, fail to param init` -> `qiyu_Init=0`, and the pending `ClassNotFoundException` later aborts the process (`thread.cc: No pending exception expected`). That exact combination was a shipped regression once.
+- **`qiyu_Init` returning false is not fatal on Qiyu X.** `PlatformActivity` loads `qiyivrsdkcore/sxrapi` first (`VRSDKCore: JNI_OnLoad`), so the SXR stack is already up and `qiyu_IsControllerInit()` is true. Treat `init==0 && controller_init==1` as usable; only bail when both are false. Bailing gave the classic "black screen then exit".
+- **Call ordering matters (`third_party/qiyu/Include/QiyuApi.h`).** `qiyu_StartEye` must run *after* the eye FBO is bound and *before* that eye is rendered; `qiyu_EndEye` after the eye. `qiyu_StartVR(window)` on `APP_CMD_START/RESUME/INIT_WINDOW`; `qiyu_EndVR` on `APP_CMD_PAUSE/TERM_WINDOW`. `qiyu_Update(dt)` before rendering. A stale SXR session (no `EndVR`) also presents as a black screen on the next launch.
+- **Native SXR delegate beats OpenXR on Qiyu.** `DeviceDelegateQiyu` (`app/src/qiyu/cpp/`) submits straight to the SXR compositor and holds 71.8 fps at 1920x1920; WebXR still works because Gecko drives it through `ExternalVR`, not OpenXR. The OpenXR path on the same hardware goes through Monado's VR700 SXR backend, where the app FOV (60x63 deg) is narrower than the panel (82x92 deg): SXR warp expands the image (logged `Frustum Display Width/Height Scale 1.369/1.452`) and starves on frame pacing (`No valid frame to warp`) producing moving vertical/snowflake artifacts. That is a runtime-side double-warp, not a Wolvic shader bug.
+- **`ANativeWindow_setFrameRate not found`** on VR700 firmware means our refresh-rate request is only honoured compositor-side; the panel keeps 90 Hz while the app may sit at ~61-80 Hz. Do not "fix" missing frames by only lowering resolution; check the compositor interval in logcat (`compositor_request_display_refresh_rate`).
+- **MIX (A081) has no `org.khronos.openxr.runtime_broker`** on the firmware seen here; OpenXR returns `XR_ERROR_RUNTIME_UNAVAILABLE`. The build must degrade instead of throwing. MIX also lacks `libStereoRectifyWrapper.so`, so `SxrApi.<clinit>` (which `System.loadLibrary("sxrapi")` -> dependency chain) fails there; keep the class (R8) but expect SXR to be unusable on that firmware unless the vendor lib is present.
+- Useful logcat filters while debugging Qiyu: `QIYU:|native QIYU|sxr |VRSDKCore|ash_reader|QvrSDK:ConCoreS|No valid frame to warp|Fatal signal|Abort message`.
+- Reference artifacts used for reverse engineering live outside the repo: `F:\vr-sdks\qiyu\ref\Firefox Reality 12.3.apk.1`, `F:\vr-sdks\qiyu\ref\Wolvic-qiyu-arm64-gecko-generic-debug-itk2026 9 29.apk.1`, and the working comparison client at `F:\alvr-openxr-v20`. Official SDK examples: `F:\vr-sdks\qiyu\Qiyu_Unreal_SDK_v1.5.0.zip`, `Qiyu_UnityXR_SDK_v1.5.0.zip`, headers in `third_party/qiyu/Include/`.
+
+## Practical guidance
+
+- Pick the narrowest variant that matches the change (often `noapi*Gecko*` for logic/unit-testable work; platform/OpenXR/native changes usually need the target platform flavor).
+- Read `app/build.gradle`, `settings.gradle`, `gradle/libs.versions.toml`, and the relevant `app/src/<flavor>/` tree before changing build logic or platform behavior.
+- Check `.github/workflows/*.yaml` when inferring supported build/test entrypoints; CI is the most reliable executable reference in this environment.
