@@ -100,6 +100,31 @@ def isWebKitAvailable = {
     return false
 }
 
+def getQiyuSdkDir = { ->
+    // QIYU Native SDK (headers + Lib AARs). Used by the Qiyu platform build to bundle
+    // controller/runtime libraries (e.g. libqiyuapi.so). Point this at an extracted
+    // Qiyu_Native_SDK (containing Include/ and Lib/) or at a directory with AARs/jni libs.
+    // ALVR uses the same SDK family; see https://dev-qiyu.iqiyi.com/ and F:\vr-sdks\qiyu.
+    if (gradle.hasProperty("localProperties.qiyuSdkDir")) {
+        return gradle."localProperties.qiyuSdkDir"
+    }
+    if (gradle.hasProperty("localProperties.qiyu_sdk_dir")) {
+        return gradle."localProperties.qiyu_sdk_dir"
+    }
+    return "${project.rootDir}/third_party/qiyu"
+}
+
+// The Qiyu flavor ships a single APK that includes the app-side Qiyu/SXR SDK. This mirrors
+// ALVR's universal client: the Activity loads the Qiyu libraries *before* NativeActivity starts
+// OpenXR, so the app classloader owns libsxrapi.so before the Monado/VR700 runtime touches it.
+// qiyu_Init is deferred until the OpenXR input path is live, and only runs on Qiyu X where the
+// runtime does not supply complete controllers. Pass -PqiyuControllerBridge=false to build the
+// old pure-OpenXR APK (no app-side SXR classes/libraries).
+def qiyuBridgeProperty = project.findProperty('qiyuControllerBridge')
+def qiyuControllerBridge = qiyuBridgeProperty == null ||
+        qiyuBridgeProperty.toString().isEmpty() ||
+        qiyuBridgeProperty.toString().toBoolean()
+
 // Version names for Gecko and Chromium releases.
 def GECKO_VERSION_NAME = '1.11'
 def CHROMIUM_VERSION_NAME = '1.5'
@@ -279,6 +304,23 @@ android {
             }
         }
 
+        qiyu {
+            // QIYU / iQIYI all-in-one VR headsets (QIYU 3, Dream, Dream Pro, MIX, Qiyu X).
+            // OpenXR-based platform; controller handling is augmented for Qiyu X via qiyuapi
+            // (see app/src/qiyu and OpenXR QIYU integration), following ALVR's Qiyu experience.
+            dimension = "platform"
+            minSdk = 29
+            targetSdk = 32
+            externalNativeBuild {
+                cmake {
+                    cppFlags " -DQIYU -DOPENXR -I" + file("src/openxr/cpp").absolutePath +
+                             " -I" + file("src/qiyu/cpp").absolutePath
+                    arguments "-DQIYU=ON", "-DOPENXR=ON",
+                              "-DQIYU_SDK_DIR=" + getQiyuSdkDir()
+                }
+            }
+        }
+
         lynx {
             dimension = "platform"
             applicationIdSuffix = ".vanilla"
@@ -440,8 +482,8 @@ android {
         if (abi == 'x64')
             variant.setIgnore(platform != 'noapi' && platform !='aosp');
 
-        // Create variants for China only for HVR and Pico platforms
-        if (store == 'mainlandChina' && !(platform.startsWith('hvr') || platform.startsWith('visionglass') || platform.startsWith('picoxr')))
+        // Create variants for China only for HVR, Pico and QIYU platforms
+        if (store == 'mainlandChina' && !(platform.startsWith('hvr') || platform.startsWith('visionglass') || platform.startsWith('picoxr') || platform.startsWith('qiyu')))
             variant.setIgnore(true);
 
         // Create variants for chromium/webkit, only when they are available
@@ -516,6 +558,10 @@ android {
 
         aosp {
             manifest.srcFile "src/aosp/AndroidManifest.xml"
+        }
+
+        qiyu {
+            manifest.srcFile "src/qiyu/AndroidManifest.xml"
         }
 
         noapi {
@@ -685,6 +731,7 @@ dependencies {
     spacesImplementation libs.openxrloader10
     aospImplementation libs.openxrloader10
     hvrImplementation libs.openxrloader10
+    qiyuImplementation libs.openxrloader10
 
     // Testing
     androidTestImplementation libs.atsl.runner
@@ -719,6 +766,13 @@ dependencies {
 
     // Snapdragon Spaces
     spacesImplementation fileTree(dir: "${project.rootDir}/third_party/spaces", include: ['*.aar'])
+
+    // QIYU / iQIYI: the default single APK includes the Qiyu Native SDK
+    // (qiyivrsdkcore/sxrapi/ashreader/qiyuapi). PlatformActivity loads these before OpenXR
+    // starts, and the Qiyu X controller bridge initializes lazily once OpenXR is running.
+    if (qiyuControllerBridge) {
+        qiyuImplementation fileTree(dir: getQiyuSdkDir(), include: ['**/*.aar', '**/*.jar'])
+    }
 
     // Vision Glass
     visionglassImplementation fileTree(dir: "${project.rootDir}/third_party/aliceimu/", include: ['*.aar'])
@@ -819,6 +873,10 @@ android.applicationVariants.configureEach { variant ->
     def platform = variant.productFlavors.get(0).name
     def store = variant.productFlavors.get(3).name
 
+    if (platform.toLowerCase().startsWith('qiyu')) {
+        variant.buildConfigField "boolean", "QIYU_CONTROLLER_BRIDGE", qiyuControllerBridge.toString()
+    }
+
     // Default homepages and voice recognition services for China releases.
     // HVR packages for mainland china must only use HVR speech recognition system.
     if (store == "mainlandChina") {
@@ -833,6 +891,9 @@ android.applicationVariants.configureEach { variant ->
             variant.buildConfigField "String[]", "SPEECH_SERVICES", "{ com.igalia.wolvic.speech.SpeechServices.VOSK }"
         }  else if (platform.toLowerCase().startsWith('pfdmxr')) {
             variant.resValue 'string', 'HOMEPAGE_URL', '"https://wolvic.com/zh/start/pfdm.html"'
+            variant.buildConfigField "String[]", "SPEECH_SERVICES", "{ com.igalia.wolvic.speech.SpeechServices.VOSK }"
+        }  else if (platform.toLowerCase().startsWith('qiyu')) {
+            variant.resValue 'string', 'HOMEPAGE_URL', '"https://wolvic.com/zh/start/index.html"'
             variant.buildConfigField "String[]", "SPEECH_SERVICES", "{ com.igalia.wolvic.speech.SpeechServices.VOSK }"
         }
     }

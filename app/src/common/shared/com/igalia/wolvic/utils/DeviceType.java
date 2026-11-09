@@ -11,7 +11,7 @@ import com.igalia.wolvic.BuildConfig;
 
 public class DeviceType {
     // These values need to match those in Device.h
-    @IntDef(value = {Unknown, OculusGo, OculusQuest, ViveFocus, ViveFocusPlus, PicoNeo2, PicoG2, PicoNeo3, OculusQuest2, HVR3DoF, HVR6DoF, Pico4x, MetaQuestPro, LynxR1, LenovoA3, LenovoVRX, MagicLeap2, MetaQuest3, VisionGlass, Pico4U, PfdmYVR1, PfdmYVR2, PfdmMR})
+    @IntDef(value = {Unknown, OculusGo, OculusQuest, ViveFocus, ViveFocusPlus, PicoNeo2, PicoG2, PicoNeo3, OculusQuest2, HVR3DoF, HVR6DoF, Pico4x, MetaQuestPro, LynxR1, LenovoA3, LenovoVRX, MagicLeap2, MetaQuest3, VisionGlass, Pico4U, PfdmYVR1, PfdmYVR2, PfdmMR, Qiyu3, QiyuDream, QiyuDreamPro, QiyuMix, QiyuX})
     public @interface Type {}
     public static final int Unknown = 0;
     public static final int OculusGo = 1;
@@ -36,6 +36,11 @@ public class DeviceType {
     public static final int PfdmYVR1 = 21;
     public static final int PfdmYVR2 = 22;
     public static final int PfdmMR = 23;
+    public static final int Qiyu3 = 24;
+    public static final int QiyuDream = 25;
+    public static final int QiyuDreamPro = 26;
+    public static final int QiyuMix = 27;
+    public static final int QiyuX = 28;
 
     private static @Type int mType = Unknown;
     private static String mDeviceName = "Unknown Device";
@@ -99,6 +104,21 @@ public class DeviceType {
             case PfdmMR:
                 mDeviceName = "PFDM MR";
                 break;
+            case Qiyu3:
+                mDeviceName = "QIYU 3";
+                break;
+            case QiyuDream:
+                mDeviceName = "QIYU Dream";
+                break;
+            case QiyuDreamPro:
+                mDeviceName = "QIYU Dream Pro";
+                break;
+            case QiyuMix:
+                mDeviceName = "QIYU MIX";
+                break;
+            case QiyuX:
+                mDeviceName = "QIYU X";
+                break;
             default:
                 mDeviceName = "Unknown Device";
                 break;
@@ -138,6 +158,36 @@ public class DeviceType {
         return BuildConfig.FLAVOR_platform.toLowerCase().contains("pfdmxr");
     }
 
+    public static boolean isQiyu() {
+        return BuildConfig.FLAVOR_platform.toLowerCase().contains("qiyu");
+    }
+
+    // Best-effort Qiyu X detection for the optional qiyuapi controller bridge.
+    // Qiyu X is the only known Qiyu model whose OpenXR runtime does not provide
+    // the complete controller input surface. Dream/VR700/Monado runtimes own the
+    // SXR stack themselves, so loading the app-side SDK there breaks presentation.
+    public static boolean isQiyuXModel() {
+        String model = safeUpper(Build.MODEL);
+        String device = safeUpper(Build.DEVICE);
+        String product = safeUpper(Build.PRODUCT);
+        String manufacturer = safeUpper(Build.MANUFACTURER);
+        if (model.contains("MIX") || device.contains("MIX") || product.contains("MIX")) {
+            return false;
+        }
+        boolean qiyu = model.contains("QIYU") || model.contains("IQIYI") ||
+                device.contains("QIYU") || device.contains("IQIYI") ||
+                product.contains("QIYU") || product.contains("IQIYI") ||
+                manufacturer.contains("IQIYI");
+        boolean x = model.endsWith("X") || model.contains(" X") || model.contains("QIYUX") || model.contains("X1") ||
+                device.endsWith("X") || device.contains(" X") || device.contains("QIYUX") ||
+                product.endsWith("X") || product.contains(" X") || product.contains("QIYUX");
+        return qiyu && x;
+    }
+
+    private static String safeUpper(String value) {
+        return value == null ? "" : value.toUpperCase(java.util.Locale.ROOT);
+    }
+
     public static String getDeviceTypeId() {
         String type = BuildConfig.FLAVOR_platform;
         if (DeviceType.isOculusBuild()) {
@@ -150,6 +200,8 @@ public class DeviceType {
             type = "spaces";
         } else if (DeviceType.isPfdmXR()) {
             type = "pfdmxr";
+        } else if (DeviceType.isQiyu()) {
+            type = "qiyu";
         }
 
         return type;

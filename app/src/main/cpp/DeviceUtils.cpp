@@ -9,6 +9,11 @@
 #include "vrb/Transform.h"
 #include "vrb/Vector.h"
 #include "vrb/VertexArray.h"
+#include <algorithm>
+#include <cctype>
+#include <cstring>
+#include <mutex>
+#include <string>
 
 namespace crow {
 
@@ -145,7 +150,8 @@ device::DeviceType DeviceUtils::GetDeviceTypeFromSystem() {
     char model[128];
     int length = PopulateDeviceModelString(model);
 
-    if (deviceNamesMap.empty()) {
+    static std::once_flag deviceNamesInitFlag;
+    std::call_once(deviceNamesInitFlag, [] {
         deviceNamesMap.emplace("Quest", device::OculusQuest);
         deviceNamesMap.emplace("Quest 2", device::OculusQuest2);
         deviceNamesMap.emplace("Quest 3", device::MetaQuest3);
@@ -163,14 +169,70 @@ device::DeviceType DeviceUtils::GetDeviceTypeFromSystem() {
         deviceNamesMap.emplace("YVR 1", device::PfdmYVR1);
         deviceNamesMap.emplace("YVR 2", device::PfdmYVR2);
         deviceNamesMap.emplace("PFDM MR", device::PfdmMR);
-    }
+        // QIYU / iQIYI all-in-one headsets (model strings vary by firmware/market)
+        deviceNamesMap.emplace("QIYU 3", device::Qiyu3);
+        deviceNamesMap.emplace("Qiyu 3", device::Qiyu3);
+        deviceNamesMap.emplace("QIYU3", device::Qiyu3);
+        deviceNamesMap.emplace("QIYU Dream", device::QiyuDream);
+        deviceNamesMap.emplace("Qiyu Dream", device::QiyuDream);
+        deviceNamesMap.emplace("QIYU Dream Pro", device::QiyuDreamPro);
+        deviceNamesMap.emplace("Qiyu Dream Pro", device::QiyuDreamPro);
+        deviceNamesMap.emplace("QIYU MIX", device::QiyuMix);
+        deviceNamesMap.emplace("Qiyu MIX", device::QiyuMix);
+        deviceNamesMap.emplace("QIYU Mix", device::QiyuMix);
+        // Qiyu MIX firmware model (log 4: "Device A081 is not supported"); same family as Dream A091.
+        deviceNamesMap.emplace("A081", device::QiyuMix);
+        deviceNamesMap.emplace("A081 Mix", device::QiyuMix);
+        deviceNamesMap.emplace("iQIYI-A081", device::QiyuMix);
+        deviceNamesMap.emplace("iQIYI-A081-P", device::QiyuMix);
+        deviceNamesMap.emplace("QIYU X", device::QiyuX);
+        deviceNamesMap.emplace("Qiyu X", device::QiyuX);
+        deviceNamesMap.emplace("QIYUX", device::QiyuX);
+        // Firmware model numbers reported by some Qiyu Dream / Legion VR700 builds.
+        deviceNamesMap.emplace("A091", device::QiyuDream);
+        deviceNamesMap.emplace("iQIYI-A6-P", device::QiyuDream);
+        deviceNamesMap.emplace("iQIYI-A6", device::QiyuDream);
+        deviceNamesMap.emplace("Lenovo Legion VR700", device::QiyuDream);
+        deviceNamesMap.emplace("Legion VR700", device::QiyuDream);
+        deviceNamesMap.emplace("VR700", device::QiyuDream);
+    });
 
     auto device = deviceNamesMap.find(model);
-    if (device == deviceNamesMap.end()) {
-        VRB_WARN("Device %s is not supported", model);
-        return device::UnknownType;
+    if (device != deviceNamesMap.end()) {
+        return device->second;
     }
-    return device->second;
+
+    // Fallback heuristics for QIYU/iQIYI/Lenovo Legion VR700 naming variations.
+    std::string modelName(model);
+    auto containsIgnoreCase = [](const std::string& haystack, const char* needle) {
+        auto it = std::search(haystack.begin(), haystack.end(), needle, needle + strlen(needle),
+                              [](char a, char b) { return tolower(static_cast<unsigned char>(a)) == tolower(static_cast<unsigned char>(b)); });
+        return it != haystack.end();
+    };
+    if (containsIgnoreCase(modelName, "vr700") || containsIgnoreCase(modelName, "legion vr") ||
+        (containsIgnoreCase(modelName, "lenovo") && containsIgnoreCase(modelName, "legion") && containsIgnoreCase(modelName, "vr")) ||
+        containsIgnoreCase(modelName, "a091") || containsIgnoreCase(modelName, "iqiyi-a6") ||
+        containsIgnoreCase(modelName, "iqiyi a6")) {
+        return device::QiyuDream;
+    } else if (containsIgnoreCase(modelName, "dream") && containsIgnoreCase(modelName, "pro")) {
+        return device::QiyuDreamPro;
+    } else if (containsIgnoreCase(modelName, "dream")) {
+        return device::QiyuDream;
+    } else if (containsIgnoreCase(modelName, "mix") || containsIgnoreCase(modelName, "a081") ||
+               containsIgnoreCase(modelName, "iqiyi-a081") || containsIgnoreCase(modelName, "iqiyi a081")) {
+        return device::QiyuMix;
+    } else if ((containsIgnoreCase(modelName, "qiyu") || containsIgnoreCase(modelName, "iqiyi")) &&
+               (containsIgnoreCase(modelName, " x") || containsIgnoreCase(modelName, "x1") ||
+                modelName.back() == 'X' || modelName.back() == 'x')) {
+        return device::QiyuX;
+    } else if (containsIgnoreCase(modelName, "qiyu 3") || containsIgnoreCase(modelName, "qiyu3")) {
+        return device::Qiyu3;
+    } else if (containsIgnoreCase(modelName, "qiyu") || containsIgnoreCase(modelName, "iqiyi")) {
+        return device::Qiyu3;
+    }
+
+    VRB_WARN("Device %s is not supported", model);
+    return device::UnknownType;
 }
 
 }

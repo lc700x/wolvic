@@ -143,7 +143,18 @@
 # Keep classes from HTC SDK
 # --------------------------------------------------------------------
 -keep class com.htc.** {*;}
+# REQUIRED: SXR's native sxrInitialize() resolves com/qualcomm/sxrapi/SxrApi with
+# JNI FindClass, and qiyu_Init fails ("fail to param init") if R8 strips it; the
+# pending ClassNotFoundException then aborts the process. Do NOT remove this keep.
 -keep class com.qualcomm.** {*;}
+
+# --------------------------------------------------------------------
+# QIYU / iQIYI SDK
+# --------------------------------------------------------------------
+# AndroidPlugin is instantiated by libqiyivrsdkcore.so through JNI FindClass,
+# so R8 cannot see the reference and would strip it in release builds.
+-keep class com.qiyi.** {*;}
+-keep class com.iqiyi.** {*;}
 
 # --------------------------------------------------------------------
 # AppServices & Components

@@ -57,6 +57,11 @@ const DeviceType Pico4U = 20;
 const DeviceType PfdmYVR1 = 21;
 const DeviceType PfdmYVR2 = 22;
 const DeviceType PfdmMR = 23;
+const DeviceType Qiyu3 = 24;
+const DeviceType QiyuDream = 25;
+const DeviceType QiyuDreamPro = 26;
+const DeviceType QiyuMix = 27;
+const DeviceType QiyuX = 28;
 
 enum class TargetRayMode : uint8_t { Gaze, TrackedPointer, Screen };
 
