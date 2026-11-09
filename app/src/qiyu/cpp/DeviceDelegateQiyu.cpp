@@ -26,13 +26,16 @@ namespace {
 constexpr float kClickThreshold = 0.2f;
 constexpr int kMaxControllers = 2;
 
-// Qiyu SDK is right-handed like SXR/OpenVR; Wolvic world is Y-up, -Z forward.
-// Negate position (both axes) and keep the rotation, matching the reference delegate
-// and the in-tree QiyuControllerBridge fallback.
+// Qiyu SDK poses are in a Y-down / Z-reversed frame relative to SXR world space
+// (verified against the system's own QiyiController getPose logs: SDK left controller
+// comes back as (-0.13,-0.30,-0.24) while SXR reports (-0.05,+0.31,+0.16)). That is a
+// 180 degree rotation about X, not an axis inversion: negate Y and Z only, keeping X so
+// the left/right controllers stay on their correct sides. Negating all three axes
+// mirrored left and right, which made the pointer unusable.
 vrb::Matrix ToWolvicMatrix(const qiyu::Vector3& p, const qiyu::Quaternion& r) {
-  vrb::Quaternion q(r.x, r.y, r.z, r.w);
+  vrb::Quaternion q(r.x, -r.y, -r.z, r.w);
   vrb::Matrix matrix = vrb::Matrix::Rotation(q);
-  matrix.PreMultiplyInPlace(vrb::Matrix::Position(vrb::Vector(-p.x, -p.y, -p.z)));
+  matrix.PreMultiplyInPlace(vrb::Matrix::Position(vrb::Vector(p.x, -p.y, -p.z)));
   return matrix;
 }
 
@@ -307,6 +310,11 @@ struct DeviceDelegateQiyu::State {
     delegate.SetLeftHanded(index, leftHanded);
     delegate.SetTargetRayMode(index, device::TargetRayMode::TrackedPointer);
     delegate.SetCapabilityFlags(index, device::Orientation | device::Position | device::PositionEmulated);
+    // Controller::mode defaults to None, and BrowserWorld hides the controller model
+    // unless mode == Device ("modelToggle->ToggleAll(mode == ControllerMode::Device)").
+    // OpenXR/HVR/noapi all set it; without it the model and beam stay invisible even
+    // though buttons and the pointer ray already work.
+    delegate.SetMode(index, ControllerMode::Device);
     // SXR reports controller poses in ground space, same as the head pose. The head
     // transform subtracts trackingOffset (ground -> local); controllers must apply the
     // same correction or they land ~headHeight below their real position and the pointer
@@ -320,15 +328,31 @@ struct DeviceDelegateQiyu::State {
       delegate.SetBatteryLevel(index, data.batteryLevel);
     }
 
-    const bool triggerPressed = (data.button & qiyu::BT_Trigger) != 0 || data.triggerForce >= kClickThreshold;
+    // Qiyu X firmware reports button *touch* bits but leaves the press bits and the analog
+    // trigger/grip forces at zero in qiyu_GetControllerData (verified on device: touch=0x1
+    // while button=0x0 and trigger=0.00). Without a fallback nothing is ever clickable, so
+    // when no analog value is delivered at all treat "touched" as "pressed".
+    static bool sTouchAsClick[2] = { false, false };
+    if ((data.buttonTouch & qiyu::BT_Trigger) && data.triggerForce <= 0.001f && !sTouchAsClick[hand]) {
+      sTouchAsClick[hand] = true;
+      VRB_LOG("QIYU: controller %d exposes no analog trigger value; using touch as click", hand);
+    }
+    const bool touchAsClick = sTouchAsClick[hand];
+    const bool triggerPressed = (data.button & qiyu::BT_Trigger) != 0 ||
+                                data.triggerForce >= kClickThreshold ||
+                                (touchAsClick && (data.buttonTouch & qiyu::BT_Trigger) != 0);
     const bool triggerTouched = (data.buttonTouch & qiyu::BT_Trigger) != 0 || data.triggerForce > 0.001f;
-    const bool squeezePressed = (data.button & qiyu::BT_Grip) != 0 || data.gripForce >= kClickThreshold;
+    const bool squeezePressed = (data.button & qiyu::BT_Grip) != 0 ||
+                                data.gripForce >= kClickThreshold ||
+                                (touchAsClick && (data.buttonTouch & qiyu::BT_Grip) != 0);
     const bool squeezeTouched = (data.buttonTouch & qiyu::BT_Grip) != 0 || data.gripForce > 0.001f;
     const bool stickPressed = (data.button & qiyu::BT_JoyStick) != 0;
     const bool stickTouched = (data.buttonTouch & qiyu::BT_JoyStick) != 0;
-    const bool axPressed = (data.button & qiyu::BT_A_X) != 0;
+    const bool axPressed = (data.button & qiyu::BT_A_X) != 0 ||
+                           (touchAsClick && (data.buttonTouch & qiyu::BT_A_X) != 0);
     const bool axTouched = (data.buttonTouch & qiyu::BT_A_X) != 0;
-    const bool byPressed = (data.button & qiyu::BT_B_Y) != 0;
+    const bool byPressed = (data.button & qiyu::BT_B_Y) != 0 ||
+                           (touchAsClick && (data.buttonTouch & qiyu::BT_B_Y) != 0);
     const bool byTouched = (data.buttonTouch & qiyu::BT_B_Y) != 0;
     const bool menuPressed = (data.button & qiyu::BT_Home_Menu) != 0;
 
