@@ -42,6 +42,16 @@ vrb::Matrix ToWolvicMatrix(const qiyu::Vector3& p, const qiyu::Quaternion& r) {
   return matrix;
 }
 
+// qiyu_Matrix4 is column-major (the official sample feeds M[0][*] as glm::mat4 column 0),
+// which is exactly the storage vrb::Matrix expects (m[i][j] = element(row j, column i)).
+vrb::Matrix ToWolvicMatrix(const qiyu::Matrix4& m) {
+  return vrb::Matrix(
+      m.M[0][0], m.M[0][1], m.M[0][2], m.M[0][3],
+      m.M[1][0], m.M[1][1], m.M[1][2], m.M[1][3],
+      m.M[2][0], m.M[2][1], m.M[2][2], m.M[2][3],
+      m.M[3][0], m.M[3][1], m.M[3][2], m.M[3][3]);
+}
+
 float ToDegrees(float radians) {
   return radians * 180.0f / static_cast<float>(M_PI);
 }
@@ -303,9 +313,12 @@ struct DeviceDelegateQiyu::State {
     const float displayTimeMs = api.predictDisplayTime ? api.predictDisplayTime() : 0.0f;
     qiyu::HeadPoseState head = api.predictHeadPose(displayTimeMs);
 
-    vrb::Matrix headMatrix = ToWolvicMatrix(head.pose.position, head.pose.rotation);
-
-    // Ground-mode offset from the SXR view matrices (also gives us the eye transforms).
+    // qiyu_PredictHeadPose behaves like a 3DoF pose on this firmware (its position does not
+    // carry the tracked translation), while qiyu_GetViewMatrix returns the full 6DoF eye
+    // poses that the official native sample renders with. Recover the head position from
+    // the inverse of the two view matrices and keep the predicted rotation.
+    vrb::Vector viewHeadPos;
+    bool haveViewPose = false;
     if (api.getViewMatrix) {
       qiyu::Matrix4 leftMatrix{}, rightMatrix{};
       float offset = trackingOffset;
@@ -313,6 +326,10 @@ struct DeviceDelegateQiyu::State {
                             deviceInfo.frustumLeftEye.rotation,
                             deviceInfo.frustumRightEye.rotation)) {
         trackingOffset = offset;
+        const vrb::Vector leftPos = ToWolvicMatrix(leftMatrix).AfineInverse().GetTranslation();
+        const vrb::Vector rightPos = ToWolvicMatrix(rightMatrix).AfineInverse().GetTranslation();
+        viewHeadPos = (leftPos + rightPos) * 0.5f;
+        haveViewPose = true;
       }
     }
     if (api.getTrackingOriginMode) {
@@ -324,17 +341,27 @@ struct DeviceDelegateQiyu::State {
       VRB_LOG("QIYU: tracking mode=%s trackingOffset=%.2f",
               trackingMode == qiyu::TM_Ground ? "ground" : "device", trackingOffset);
     }
-    // Same adjustment the official native sample applies before rendering controllers
-    // (QYModel::DrawHandleLR: pos.y - trackingOffset in ground mode, nothing in device mode).
-    headMatrix.TranslateInPlace(vrb::Vector(0.0f, -GroundOffset(), 0.0f));
+
+    vrb::Matrix headMatrix;
+    if (haveViewPose) {
+      headMatrix = vrb::Matrix::Rotation(
+          vrb::Quaternion(head.pose.rotation.x, head.pose.rotation.y,
+                          head.pose.rotation.z, head.pose.rotation.w));
+      headMatrix.PreMultiplyInPlace(vrb::Matrix::Position(viewHeadPos));
+    } else {
+      // Fallback to the predicted pose with the ground-mode correction from the sample.
+      headMatrix = ToWolvicMatrix(head.pose.position, head.pose.rotation);
+      headMatrix.TranslateInPlace(vrb::Vector(0.0f, -GroundOffset(), 0.0f));
+    }
 
     // 1 Hz pose trace: a 6DoF session changes position when you move your head; a 3DoF
-    // one leaves it fixed. Useful to tell which one the runtime actually granted.
+    // one leaves it fixed. Log both sources so we can see which one is tracked.
     static double sLastHeadLogMs = 0.0;
     if (NowMs() - sLastHeadLogMs > 1000.0) {
       sLastHeadLogMs = NowMs();
-      VRB_LOG("QIYU: head raw pos=(%.2f,%.2f,%.2f) rot=(%.2f,%.2f,%.2f,%.2f) offset=%.2f",
+      VRB_LOG("QIYU: head raw pos=(%.2f,%.2f,%.2f) view pos=(%.2f,%.2f,%.2f) rot=(%.2f,%.2f,%.2f,%.2f) offset=%.2f",
               head.pose.position.x, head.pose.position.y, head.pose.position.z,
+              viewHeadPos.x(), viewHeadPos.y(), viewHeadPos.z(),
               head.pose.rotation.x, head.pose.rotation.y, head.pose.rotation.z,
               head.pose.rotation.w, GroundOffset());
     }
