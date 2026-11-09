@@ -147,6 +147,7 @@ public:
   bool (*getViewMatrix)(Matrix4& left, Matrix4& right, float& trackingOffset,
                         const HeadPoseState&, const Quaternion& eyeRotL, const Quaternion& eyeRotR) = nullptr;
   void (*setTrackingOriginMode)(int mode) = nullptr;
+  int (*getTrackingOriginMode)() = nullptr;
   bool (*isControllerInit)() = nullptr;
   void (*getControllerData)(ControllerData* left, ControllerData* right) = nullptr;
   void (*startVibration)(int mask, float amplitude, float durationSeconds) = nullptr;
@@ -183,6 +184,7 @@ public:
     getViewMatrix = load<bool (*)(Matrix4&, Matrix4&, float&, const HeadPoseState&,
                                   const Quaternion&, const Quaternion&)>(library, "qiyu_GetViewMatrix");
     setTrackingOriginMode = load<void (*)(int)>(library, "qiyu_SetTrackingOriginMode");
+    getTrackingOriginMode = load<int (*)()>(library, "qiyu_GetTrackingOriginMode");
     isControllerInit = load<bool (*)()>(library, "qiyu_IsControllerInit");
     getControllerData = load<void (*)(ControllerData*, ControllerData*)>(library, "qiyu_GetControllerData");
     startVibration = load<void (*)(int, float, float)>(library, "qiyu_StartControllerVibration");

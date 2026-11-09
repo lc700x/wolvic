@@ -29,16 +29,16 @@ namespace {
 constexpr float kClickThreshold = 0.2f;
 constexpr int kMaxControllers = 2;
 
-// Qiyu SDK poses are in a Y-down / Z-reversed frame relative to SXR world space
-// (verified against the system's own QiyiController getPose logs: SDK left controller
-// comes back as (-0.13,-0.30,-0.24) while SXR reports (-0.05,+0.31,+0.16)). That is a
-// 180 degree rotation about X, not an axis inversion: negate Y and Z only, keeping X so
-// the left/right controllers stay on their correct sides. Negating all three axes
-// mirrored left and right, which made the pointer unusable.
+// The Qiyu native SDK returns poses in the same right-handed, Y-up, -Z-forward
+// space as its view matrices (see the official QiyuVR_NativeActivity sample:
+// QYModel::DrawHandleLR builds glm::translate(pos) * glm::mat4_cast(quat) with the raw
+// position and quaternion, and renders it with the view matrix from qiyu_GetViewMatrix).
+// Wolvic uses the same convention, so no axis remapping is needed. The earlier
+// (x,-y,-z) conversion mirrored yaw/pitch and put the controllers above/behind the head.
 vrb::Matrix ToWolvicMatrix(const qiyu::Vector3& p, const qiyu::Quaternion& r) {
-  vrb::Quaternion q(r.x, -r.y, -r.z, r.w);
+  vrb::Quaternion q(r.x, r.y, r.z, r.w);
   vrb::Matrix matrix = vrb::Matrix::Rotation(q);
-  matrix.PreMultiplyInPlace(vrb::Matrix::Position(vrb::Vector(p.x, -p.y, -p.z)));
+  matrix.PreMultiplyInPlace(vrb::Matrix::Position(vrb::Vector(p.x, p.y, p.z)));
   return matrix;
 }
 
@@ -100,8 +100,16 @@ struct DeviceDelegateQiyu::State {
   int32_t boundEye { -1 };
   double lastUpdateMs { 0.0 };
   float trackingOffset { 0.0f };
+  int trackingMode { qiyu::TM_Device };
   int lastConnected[2] { -1, -1 };
   int lastBattery[2] { -1, -1 };
+
+  // Ground mode only: the SDK reports ground-relative poses and the official sample
+  // subtracts the tracking offset from the controller Y to bring it into the head-local
+  // space used by the view matrix. In device mode the poses are already head-local.
+  float GroundOffset() const {
+    return trackingMode == qiyu::TM_Ground ? trackingOffset : 0.0f;
+  }
 
   // Bring-up calibration for the pointer ray (see UpdateAimOffset). Identity by default,
   // which makes the beam follow the controller's own -Z axis (the direction the vendor
@@ -307,7 +315,18 @@ struct DeviceDelegateQiyu::State {
         trackingOffset = offset;
       }
     }
-    headMatrix.TranslateInPlace(vrb::Vector(0.0f, -trackingOffset, 0.0f));
+    if (api.getTrackingOriginMode) {
+      trackingMode = api.getTrackingOriginMode();
+    }
+    static int sLoggedMode = -1;
+    if (sLoggedMode != trackingMode) {
+      sLoggedMode = trackingMode;
+      VRB_LOG("QIYU: tracking mode=%s trackingOffset=%.2f",
+              trackingMode == qiyu::TM_Ground ? "ground" : "device", trackingOffset);
+    }
+    // Same adjustment the official native sample applies before rendering controllers
+    // (QYModel::DrawHandleLR: pos.y - trackingOffset in ground mode, nothing in device mode).
+    headMatrix.TranslateInPlace(vrb::Vector(0.0f, -GroundOffset(), 0.0f));
 
     headTransform = reorientMatrix.PostMultiply(headMatrix);
     cameras[0]->SetHeadTransform(headTransform);
@@ -315,8 +334,10 @@ struct DeviceDelegateQiyu::State {
 
     const qiyu::Vector3& leftPos = deviceInfo.frustumLeftEye.position;
     const qiyu::Vector3& rightPos = deviceInfo.frustumRightEye.position;
-    eyeTransforms[0] = vrb::Matrix::Translation(vrb::Vector(leftPos.x, leftPos.y, leftPos.z));
-    eyeTransforms[1] = vrb::Matrix::Translation(vrb::Vector(rightPos.x, rightPos.y, rightPos.z));
+    const qiyu::Quaternion& leftRot = deviceInfo.frustumLeftEye.rotation;
+    const qiyu::Quaternion& rightRot = deviceInfo.frustumRightEye.rotation;
+    eyeTransforms[0] = ToWolvicMatrix(leftPos, leftRot);
+    eyeTransforms[1] = ToWolvicMatrix(rightPos, rightRot);
     cameras[0]->SetEyeTransform(eyeTransforms[0]);
     cameras[1]->SetEyeTransform(eyeTransforms[1]);
     if (immersiveDisplay) {
@@ -367,18 +388,14 @@ struct DeviceDelegateQiyu::State {
     // OpenXR/HVR/noapi all set it; without it the model and beam stay invisible even
     // though buttons and the pointer ray already work.
     delegate.SetMode(index, ControllerMode::Device);
-    // SXR reports controller poses in ground space, same as the head pose. The head
-    // transform subtracts trackingOffset (ground -> local); controllers must apply the
-    // same correction or they land ~headHeight below their real position and the pointer
-    // ray aims at the floor (the "controller cannot control" symptom). Mirrors ALVR's
-    // controller_motion()/head_pose(), which both subtract tracking_offset.
+    // SXR reports ground-space poses in ground mode; the official native sample subtracts
+    // the tracking offset from the controller Y so it matches the head-local view space
+    // (QYModel::DrawHandleLR). In device mode the pose is already head-local.
     vrb::Matrix controllerTransform = ToWolvicMatrix(data.position, data.rotation);
-    controllerTransform.TranslateInPlace(vrb::Vector(0.0f, -trackingOffset, 0.0f));
-    // qiyuapi only reports the grip pose, there is no separate aim pose. Use the grip pose
-    // as the pointer ray (aimOffset is identity unless a bring-up calibration says
-    // otherwise) and, in immersive mode, as the gripspace pose Gecko expects. OpenXR does
-    // the same when the runtime has no aim space (OpenXRInputSource: SetBeamTransform in
-    // StandAlone, SetImmersiveBeamTransform in Immersive).
+    controllerTransform.TranslateInPlace(vrb::Vector(0.0f, -GroundOffset(), 0.0f));
+    // The Qiyu controller pose is the system's pointing pose (the official sample renders
+    // its controller model and ray directly from it), so use it as the pointer ray too.
+    // aimOffset stays identity unless a bring-up calibration says otherwise.
     if (renderMode == device::RenderMode::Immersive) {
       delegate.SetTransform(index, controllerTransform.PostMultiply(aimOffset));
       delegate.SetImmersiveBeamTransform(index, controllerTransform);
@@ -668,6 +685,11 @@ DeviceDelegateQiyu::EnterVR(const BrowserEGLContext& aEGLContext) {
   }
   if (m.api.setTrackingOriginMode) {
     m.api.setTrackingOriginMode(qiyu::TM_Ground);
+    if (m.api.getTrackingOriginMode) {
+      VRB_LOG("QIYU: tracking mode after set = %s (offset %.2f)",
+              m.api.getTrackingOriginMode() == qiyu::TM_Ground ? "ground" : "device",
+              m.trackingOffset);
+    }
   }
   if (m.api.setFoveation) {
     m.api.setFoveation(qiyu::FL_Low, nullptr);
