@@ -14,9 +14,12 @@ Firefox Reality 12.3 and the Qiyu Unity/Unreal SDKs.
 1. **Never invent axis flips.** `qiyu_*` poses are right-handed, Y-up, -Z-forward,
    the same convention as OpenGL/OpenXR. A `(x,-y,-z)` "fix" mirrors yaw/pitch
    (point left, beam goes right) and puts controllers above/behind the head.
-2. **Head and controllers must come from the same frame/source.** Mixing a
-   view-matrix-derived head pose with raw controller poses makes the world look
-   glued to the head ("0DoF").
+2. **Camera = SDK view matrices, controllers = raw poses.** The official sample
+   renders with `qiyu_GetViewMatrix`; invert both eye matrices for the head/eye
+   transforms and keep controllers on their raw `qiyu_GetControllerData` poses.
+   Never mix a view-derived head position with the `qiyu_PredictHeadPose`
+   rotation (or use the predicted pose as the camera with raw controllers) —
+   that makes the world look glued to the head ("0DoF").
 3. **Ground vs device mode is a real branch.** `TM_Ground` subtracts
    `trackingOffset` from Y; `TM_Device` must use the pose unchanged. Apply the
    same rule to head and controllers.
@@ -146,25 +149,31 @@ At startup the head should be near `(0,0,0)` and a controller held in front
 roughly `(±0.15, -0.20…-0.35, -0.20…-0.35)` — i.e. right/left, below and in front
 of the head. Values like `(0.13, +0.35, +0.35)` mean Y/Z were negated.
 
-### 5.3 Do not mix frames
+### 5.3 Camera vs controllers: use the SDK view matrices for the camera
 
-On Qiyu X, the head position recovered from `qiyu_GetViewMatrix` is a **point
-reflection** of `qiyu_PredictHeadPose`:
+`qiyu_GetViewMatrix` is what the official sample renders with. Use it for the
+whole camera:
+
+- invert both eye view matrices,
+- head position = midpoint of the two eye world positions,
+- head rotation = the left eye's world rotation,
+- eye transform = `eyeWorld * headWorld⁻¹` so `head * eye` reproduces the SDK
+  eye pose.
+
+Controllers stay on their raw `qiyu_GetControllerData` poses with the
+ground-mode correction. This is exactly `matView * matWorld` in the sample.
+
+`qiyu_PredictHeadPose` and the view matrix disagree on Qiyu X (the view head is
+a point reflection of the raw pose):
 
 ```
 raw  = (-0.05, 0.31,  0.64)
 view = ( 0.05, 1.28, -0.64)     // = (-x, 1.59 - y, -z)
 ```
 
-Using the view-matrix head with raw controller poses puts the camera and the
-world in mirrored frames: the UI appears glued to the head (the classic "0DoF"
-feel). Pick one frame and use it for both:
-
-- **Recommended:** `qiyu_PredictHeadPose` (raw) + `qiyu_GetControllerData` (raw),
-  same `TM_Ground` correction. The log proves this pose is 6DoF (its position
-  changes by 0.15–0.6 m while the head moves).
-- Use `qiyu_GetViewMatrix` only for the `trackingOffset` value (and as a fallback
-  render source if you also feed the controllers through it).
+Do not mix them — view position with predicted rotation, or predicted head with
+raw controllers. Those mixed frames produced the "everything follows the head /
+0DoF" and misplaced-controller symptoms during bring-up.
 
 ### 5.4 Ground vs device mode
 
