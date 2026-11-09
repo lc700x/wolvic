@@ -18,7 +18,10 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
+#include <cstring>
 #include <ctime>
+#include <sys/system_properties.h>
 
 namespace crow {
 
@@ -100,6 +103,13 @@ struct DeviceDelegateQiyu::State {
   int lastConnected[2] { -1, -1 };
   int lastBattery[2] { -1, -1 };
 
+  // Bring-up calibration for the pointer ray (see UpdateAimOffset). Identity by default,
+  // which makes the beam follow the controller's own -Z axis (the direction the vendor
+  // Unity toolkit attaches its ray to the controller model).
+  vrb::Matrix aimOffset { vrb::Matrix::Identity() };
+  char aimOffsetProp[PROP_VALUE_MAX] { 0 };
+  double lastAimOffsetCheckMs { 0.0 };
+
   void Initialize() {
     vrb::RenderContextPtr render = context.lock();
     if (!render) {
@@ -120,6 +130,45 @@ struct DeviceDelegateQiyu::State {
       auto v = api.getSdkVersion();
       VRB_LOG("QIYU: native SDK %d.%d.%d", v.versionProduct, v.versionMajor, v.versionMinor);
     }
+  }
+
+  // qiyuapi has no separate aim pose: the controller pose is all we get, and applying it
+  // directly is what the vendor Unity toolkit does (its ray is a child of the controller
+  // model with no rotation). If a specific Qiyu controller/firmware needs a tilt between
+  // the grip and the pointing direction, it can be dialled in without a rebuild:
+  //
+  //   adb shell setprop debug.wolvic.qiyu.aim "pitch,yaw,roll"   (degrees)
+  //
+  // Positive pitch raises the beam, positive yaw turns it left, positive roll rolls it.
+  // Re-read once a second so it can be tuned live; empty/absent property = identity.
+  void UpdateAimOffset() {
+    const double now = NowMs();
+    if (now - lastAimOffsetCheckMs < 1000.0) {
+      return;
+    }
+    lastAimOffsetCheckMs = now;
+    char value[PROP_VALUE_MAX] { 0 };
+    __system_property_get("debug.wolvic.qiyu.aim", value);
+    if (std::strcmp(value, aimOffsetProp) == 0) {
+      return;
+    }
+    std::strncpy(aimOffsetProp, value, sizeof(aimOffsetProp) - 1);
+    aimOffsetProp[sizeof(aimOffsetProp) - 1] = '\0';
+    if (value[0] == '\0') {
+      aimOffset = vrb::Matrix::Identity();
+      return;
+    }
+    float pitch = 0.0f, yaw = 0.0f, roll = 0.0f;
+    if (std::sscanf(value, "%f,%f,%f", &pitch, &yaw, &roll) < 1) {
+      VRB_ERROR("QIYU: ignoring malformed debug.wolvic.qiyu.aim=\"%s\"", value);
+      aimOffset = vrb::Matrix::Identity();
+      return;
+    }
+    const float toRadians = static_cast<float>(M_PI) / 180.0f;
+    aimOffset = vrb::Matrix::Rotation(vrb::Vector(1.0f, 0.0f, 0.0f), pitch * toRadians)
+        .PostMultiply(vrb::Matrix::Rotation(vrb::Vector(0.0f, 1.0f, 0.0f), yaw * toRadians))
+        .PostMultiply(vrb::Matrix::Rotation(vrb::Vector(0.0f, 0.0f, 1.0f), roll * toRadians));
+    VRB_LOG("QIYU: aim offset pitch=%.1f yaw=%.1f roll=%.1f", pitch, yaw, roll);
   }
 
   bool InitSDK() {
@@ -289,9 +338,12 @@ struct DeviceDelegateQiyu::State {
     }
     if (lastConnected[hand] != 1) {
       lastConnected[hand] = 1;
-      VRB_LOG("QIYU: controller %d connected battery=%d pos=(%.3f,%.3f,%.3f) rot=(%.2f,%.2f,%.2f,%.2f)",
+      const vrb::Vector forward = ToWolvicMatrix(data.position, data.rotation)
+          .MultiplyDirection(vrb::Vector(0.0f, 0.0f, -1.0f));
+      VRB_LOG("QIYU: controller %d connected battery=%d pos=(%.3f,%.3f,%.3f) rot=(%.2f,%.2f,%.2f,%.2f) forward=(%.2f,%.2f,%.2f)",
               hand, data.batteryLevel, data.position.x, data.position.y, data.position.z,
-              data.rotation.x, data.rotation.y, data.rotation.z, data.rotation.w);
+              data.rotation.x, data.rotation.y, data.rotation.z, data.rotation.w,
+              forward.x(), forward.y(), forward.z());
     }
 
     // Input diagnostics: log raw button/axis transitions so we can tell whether SXR input
@@ -322,16 +374,17 @@ struct DeviceDelegateQiyu::State {
     // controller_motion()/head_pose(), which both subtract tracking_offset.
     vrb::Matrix controllerTransform = ToWolvicMatrix(data.position, data.rotation);
     controllerTransform.TranslateInPlace(vrb::Vector(0.0f, -trackingOffset, 0.0f));
-    delegate.SetTransform(index, controllerTransform);
     // qiyuapi only reports the grip pose, there is no separate aim pose. Use the grip pose
-    // as the pointer ray (identity aim relative to grip) and, in immersive mode, as the
-    // gripspace pose Gecko expects. OpenXR does exactly this when the runtime has no aim
-    // space (see OpenXRInputSource: SetBeamTransform(Identity()) in StandAlone,
-    // SetImmersiveBeamTransform(grip) in Immersive).
+    // as the pointer ray (aimOffset is identity unless a bring-up calibration says
+    // otherwise) and, in immersive mode, as the gripspace pose Gecko expects. OpenXR does
+    // the same when the runtime has no aim space (OpenXRInputSource: SetBeamTransform in
+    // StandAlone, SetImmersiveBeamTransform in Immersive).
     if (renderMode == device::RenderMode::Immersive) {
+      delegate.SetTransform(index, controllerTransform.PostMultiply(aimOffset));
       delegate.SetImmersiveBeamTransform(index, controllerTransform);
     } else {
-      delegate.SetBeamTransform(index, vrb::Matrix::Identity());
+      delegate.SetTransform(index, controllerTransform);
+      delegate.SetBeamTransform(index, aimOffset);
     }
     delegate.SetAimEnabled(index, true);
     if (data.batteryLevel != lastBattery[hand]) {
@@ -402,6 +455,7 @@ struct DeviceDelegateQiyu::State {
     if (!api.isControllerInit()) {
       return;
     }
+    UpdateAimOffset();
     qiyu::ControllerData data[2]{};
     api.getControllerData(&data[0], &data[1]);
     UpdateController(0, data[0], *controller);
