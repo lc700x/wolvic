@@ -72,6 +72,7 @@ You can build for different devices:
 - **`visionglass`**: Huawei Vision Glass
 - **`aosp`**: MagicLeap2 (but should work for any other AOSP device using OpenXR)
 - **`pfdmxr`**: PFDM YVR1, PFDM YVR2 and PFDM MR
+- **`qiyu`**: iQIYI Qiyu X, Qiyu 3, Dream/Dream Pro, MIX and Lenovo Legion VR700 (arm64). Uses the vendor's native SXR compositor (`qiyuapi`) instead of OpenXR.
 
 For testing on a non-VR device:
 
@@ -82,6 +83,50 @@ Building for Huawei requires access to its SDKs which is not included in this re
 The command line version of `gradlew` requires JDK 11. If you see an error that Gradle doesn't understand your Java version, check which version of you're using by running `java -showversion` or `java -version`. You're probably using and older JDK, which won't work.
 
 *Open the project with [Android Studio](https://developer.android.com/studio/index.html)* then build and run it. Depending on what you already have installed in Android Studio, the build may fail and then may prompt you to install dependencies. Just keep doing as it suggests. To select the device to build for, go to `Tool Windows > Build Variants` and select a build variant corresponding to your device.
+
+## Qiyu (iQIYI) headsets
+
+Wolvic has a dedicated `qiyu` flavor that renders through the vendor's native SXR
+compositor (`qiyuapi`) instead of OpenXR. On Qiyu X this is the path that keeps
+the full panel FOV and ~72 fps; WebXR sessions work through Wolvic's `ExternalVR`
+bridge, so no OpenXR runtime is involved.
+
+Build the release APK:
+
+```bash
+./gradlew assembleQiyuArm64GeckoGenericRelease
+# output:
+# app/build/outputs/apk/qiyuArm64GeckoGeneric/release/Wolvic-qiyu-arm64-gecko-generic-release.apk
+```
+
+Install (debug-signed sideload build):
+
+```bash
+adb install -r Wolvic-qiyu-arm64-gecko-generic-release.apk
+```
+
+The vendor SDK is expected in `third_party/qiyu` (`Include/` plus the
+`Lib/*.aar` files), or point `qiyuSdkDir=/path/to/qiyu` in `local.properties`.
+`third_party/` is gitignored; do not commit the vendor binaries.
+
+Prebuilt APKs are published on the [releases page](https://github.com/lc700x/wolvic/releases).
+
+### Qiyu status
+
+- **Qiyu X**: 6DoF head tracking, both controllers (model, laser beam, clicks),
+  WebXR, ~72 fps at 1920×1920 per eye.
+- **MIX (A081)**: the firmware has no OpenXR runtime broker and lacks
+  `libStereoRectifyWrapper.so`; the app degrades instead of crashing, but VR is
+  not usable on that firmware.
+- **Dream / Dream Pro / VR700 (A091)**: the OpenXR path can show runtime-side
+  double-warp (app FOV 60×63° vs 82×92° panel); the native SXR path used by this
+  flavor avoids it, with Qiyu X validated first.
+- Controller presses on Qiyu X firmware may only set touch bits; the app falls
+  back to touch-as-click. A residual grip-to-aim tilt can be tuned live with
+  `adb shell setprop debug.wolvic.qiyu.aim "pitch,yaw,roll"` (degrees; empty resets).
+
+Background and implementation notes: [`docs/qiyu-handoff.md`](docs/qiyu-handoff.md)
+and the reusable [`docs/skills/qiyu-openxr-compat/SKILL.md`](docs/skills/qiyu-openxr-compat/SKILL.md).
 
 ## Local Development
 
