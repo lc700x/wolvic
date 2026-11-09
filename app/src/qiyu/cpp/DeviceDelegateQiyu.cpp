@@ -323,6 +323,17 @@ struct DeviceDelegateQiyu::State {
     vrb::Matrix controllerTransform = ToWolvicMatrix(data.position, data.rotation);
     controllerTransform.TranslateInPlace(vrb::Vector(0.0f, -trackingOffset, 0.0f));
     delegate.SetTransform(index, controllerTransform);
+    // qiyuapi only reports the grip pose, there is no separate aim pose. Use the grip pose
+    // as the pointer ray (identity aim relative to grip) and, in immersive mode, as the
+    // gripspace pose Gecko expects. OpenXR does exactly this when the runtime has no aim
+    // space (see OpenXRInputSource: SetBeamTransform(Identity()) in StandAlone,
+    // SetImmersiveBeamTransform(grip) in Immersive).
+    if (renderMode == device::RenderMode::Immersive) {
+      delegate.SetImmersiveBeamTransform(index, controllerTransform);
+    } else {
+      delegate.SetBeamTransform(index, vrb::Matrix::Identity());
+    }
+    delegate.SetAimEnabled(index, true);
     if (data.batteryLevel != lastBattery[hand]) {
       lastBattery[hand] = data.batteryLevel;
       delegate.SetBatteryLevel(index, data.batteryLevel);
@@ -525,7 +536,17 @@ DeviceDelegateQiyu::SetControllerDelegate(ControllerDelegatePtr& aController) {
   for (int i = 0; i < kMaxControllers; ++i) {
     m.lastConnected[i] = -1;
     m.lastBattery[i] = -1;
+    // Every other delegate (OpenXR, noapi, visionglass) creates its controllers here.
+    // ControllerContainer only knows about controllers that exist in its list: without
+    // this call SetEnabled/SetTransform/SetButtonState/SetMode are all no-ops, so the
+    // controller has no model, no beam and cannot interact with anything. Model index
+    // i refers to GetControllerModelName(i) ("generic-trigger.obj").
+    m.controller->CreateController(i, i, "Oculus Touch Controller");
+    // Show it only once SXR reports the controller as connected (UpdateController).
+    m.controller->SetEnabled(i, false);
   }
+  VRB_LOG("QIYU: created %d controller entries (model=%s)", kMaxControllers,
+          GetControllerModelName(0).c_str());
 }
 
 void
