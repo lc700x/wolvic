@@ -148,6 +148,15 @@ public:
                         const HeadPoseState&, const Quaternion& eyeRotL, const Quaternion& eyeRotR) = nullptr;
   void (*setTrackingOriginMode)(int mode) = nullptr;
   int (*getTrackingOriginMode)() = nullptr;
+
+  // SXR tracking mode lives in libsxrapi, which the Qiyu SDK already pulls in
+  // (libqiyuapi.so imports sxrSetTrackingMode). kTrackingRotation = 1,
+  // kTrackingPosition = 2; mode 3 requests positional with rotational fallback, which is
+  // exactly what qiyu_StartVR does. Exposed so we can verify what the runtime granted.
+  void* sxrLibrary = nullptr;
+  int (*sxrSetTrackingMode)(int mode) = nullptr;
+  int (*sxrGetTrackingMode)() = nullptr;
+  int (*sxrGetSupportedTrackingModes)() = nullptr;
   bool (*isControllerInit)() = nullptr;
   void (*getControllerData)(ControllerData* left, ControllerData* right) = nullptr;
   void (*startVibration)(int mask, float amplitude, float durationSeconds) = nullptr;
@@ -185,6 +194,13 @@ public:
                                   const Quaternion&, const Quaternion&)>(library, "qiyu_GetViewMatrix");
     setTrackingOriginMode = load<void (*)(int)>(library, "qiyu_SetTrackingOriginMode");
     getTrackingOriginMode = load<int (*)()>(library, "qiyu_GetTrackingOriginMode");
+
+    sxrLibrary = dlopen("libsxrapi.so", RTLD_NOW | RTLD_GLOBAL);
+    if (sxrLibrary) {
+      sxrSetTrackingMode = load<int (*)(int)>(sxrLibrary, "sxrSetTrackingMode");
+      sxrGetTrackingMode = load<int (*)()>(sxrLibrary, "sxrGetTrackingMode");
+      sxrGetSupportedTrackingModes = load<int (*)()>(sxrLibrary, "sxrGetSupportedTrackingModes");
+    }
     isControllerInit = load<bool (*)()>(library, "qiyu_IsControllerInit");
     getControllerData = load<void (*)(ControllerData*, ControllerData*)>(library, "qiyu_GetControllerData");
     startVibration = load<void (*)(int, float, float)>(library, "qiyu_StartControllerVibration");

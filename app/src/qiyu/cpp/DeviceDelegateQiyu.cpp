@@ -328,6 +328,17 @@ struct DeviceDelegateQiyu::State {
     // (QYModel::DrawHandleLR: pos.y - trackingOffset in ground mode, nothing in device mode).
     headMatrix.TranslateInPlace(vrb::Vector(0.0f, -GroundOffset(), 0.0f));
 
+    // 1 Hz pose trace: a 6DoF session changes position when you move your head; a 3DoF
+    // one leaves it fixed. Useful to tell which one the runtime actually granted.
+    static double sLastHeadLogMs = 0.0;
+    if (NowMs() - sLastHeadLogMs > 1000.0) {
+      sLastHeadLogMs = NowMs();
+      VRB_LOG("QIYU: head raw pos=(%.2f,%.2f,%.2f) rot=(%.2f,%.2f,%.2f,%.2f) offset=%.2f",
+              head.pose.position.x, head.pose.position.y, head.pose.position.z,
+              head.pose.rotation.x, head.pose.rotation.y, head.pose.rotation.z,
+              head.pose.rotation.w, GroundOffset());
+    }
+
     headTransform = reorientMatrix.PostMultiply(headMatrix);
     cameras[0]->SetHeadTransform(headTransform);
     cameras[1]->SetHeadTransform(headTransform);
@@ -690,6 +701,20 @@ DeviceDelegateQiyu::EnterVR(const BrowserEGLContext& aEGLContext) {
               m.api.getTrackingOriginMode() == qiyu::TM_Ground ? "ground" : "device",
               m.trackingOffset);
     }
+  }
+  // qiyu_StartVR already calls sxrSetTrackingMode(3) (positional with rotational
+  // fallback), but re-assert it and log what the runtime actually granted so a 3DoF
+  // session is visible in the log instead of being inferred from the view.
+  if (m.api.sxrGetSupportedTrackingModes && m.api.sxrGetTrackingMode) {
+    const int supported = m.api.sxrGetSupportedTrackingModes();
+    const int current = m.api.sxrGetTrackingMode();
+    int result = -1;
+    if (m.api.sxrSetTrackingMode) {
+      result = m.api.sxrSetTrackingMode(3);
+    }
+    VRB_LOG("QIYU: sxr tracking supported=0x%x current=%d set(3)=%d now=%d",
+            supported, current, result,
+            m.api.sxrGetTrackingMode ? m.api.sxrGetTrackingMode() : -1);
   }
   if (m.api.setFoveation) {
     m.api.setFoveation(qiyu::FL_Low, nullptr);
