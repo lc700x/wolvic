@@ -3,7 +3,7 @@
 Status snapshot for whoever picks this up. Everything below is grounded in real
 device logs and reverse-engineered reference artifacts, not guesses.
 
-Branch: `main` (repo `lc700x/wolvic`), tip at the time of writing: `e05781c3`.
+Branch: `main` (repo `lc700x/wolvic`), tip at the time of writing: `33d26d7b`.
 
 ---
 
@@ -13,7 +13,7 @@ Branch: `main` (repo `lc700x/wolvic`), tip at the time of writing: `e05781c3`.
 |---|---|
 | Qiyu X (native SXR path) | **VR renders**: `qiyu_Init=1`, eye buffers `1920x1920`, `sxrBeginXr` OK, `qiyu_StartVR=1`, steady **71.8 fps**, no Monado, no warp starvation |
 | WebXR | Routes through Gecko `ExternalVR` (VRManager IPC), so it does **not** need OpenXR |
-| Qiyu X controller | Detected (`controller 1 connected battery=100`), pose+haptics plumbed; **aim/pointer still under test** after the tracking-offset fix in `e05781c3` |
+| Qiyu X controller | Detected (`controller 1 connected battery=100`), pose+haptics plumbed, controller entries created with the generic trigger model, clicked via the touch-as-click fallback (`19fb6034`), beam transforms wired (`33d26d7b`); **visual beam still under test** |
 | Qiyu MIX (A081) | App no longer crash-loops; firmware has **no OpenXR runtime broker** and lacks `libStereoRectifyWrapper.so`, so VR is not usable there yet |
 | Qiyu Dream/VR700 (A091) | OpenXR path works structurally (Monado `QIYIVR`), but shows runtime-side warp artifacts (see §5) |
 
@@ -63,8 +63,8 @@ Copy-Item -Force app\build\outputs\apk\qiyuArm64GeckoGeneric\release\Wolvic-qiyu
 
 ## 5. Known issues / open work
 
-1. **Qiyu X pointer aim** (highest priority). `qiyu_GetControllerData` gives grip pose, not the aim ray. `e05781c3` applies the same `trackingOffset` correction the head uses. Next step if still off-centre: derive the pointer from an arm/aim model the way the reference does (`arm_model::Controller` in the itk build; Wolvic already has `ElbowModel`, used by `noapi`/HVR3DoF).
-2. **Button delivery not yet proven on device.** `e05781c3` logs `button/buttonTouch/trigger/grip/stick` on change. If those never change, read controller state from the `VRSDKCore`/`ash_reader` channel (`ControllerHandManager`, shmem pose/button/state zones) instead of `qiyu_GetControllerData`.
+1. **Qiyu X pointer aim** (highest priority). `qiyu_GetControllerData` gives the grip pose, not an aim ray. The delegate now applies the same `trackingOffset` correction as the head (`e05781c3`), creates the controller entries (`33d26d7b` — without `CreateController` every `ControllerDelegate` call is a no-op and there is no model or beam at all) and feeds the grip pose as the aim (`SetBeamTransform(Identity())` standalone, `SetImmersiveBeamTransform(grip)` immersive). If the ray is still tilted relative to how the controller points in real life, derive the aim from an arm model the way the reference does (`arm_model::Controller` in the itk build; Wolvic already has `ElbowModel`, used by `noapi`/HVR3DoF).
+2. **Button delivery is partial on Qiyu X.** `e05781c3` logs `button/buttonTouch/trigger/grip/stick` on change; device logs show `touch` bits changing while `button` and `triggerForce` stay 0 (only `gripForce` reaches 1.00). `19fb6034` therefore treats "touched" as "pressed" when no analog value is ever delivered. If a button is still unusable, read controller state from the `VRSDKCore`/`ash_reader` channel (`ControllerHandManager`, shmem pose/button/state zones) instead of `qiyu_GetControllerData`.
 3. **MIX (A081)**: no OpenXR runtime broker in firmware; OpenXR must degrade (it does now). SXR also unusable without `libStereoRectifyWrapper.so`.
 4. **Dream/VR700 OpenXR artifacts**: Monado's VR700 backend gives the app a 60×63° FOV while the panel is 82×92°, so SXR warp expands the image (`Frustum Display Width/Height Scale 1.369/1.452`) and starves (`No valid frame to warp`) — moving vertical bands / snowflake. Runtime side, not a Wolvic shader. Native SXR delegate avoids it but is only wired for Qiyu models that pass detection.
 5. **`ANativeWindow_setFrameRate not found`** on VR700 firmware: our refresh request is compositor-side only; check `compositor_request_display_refresh_rate` in logcat before blaming frame pacing.
@@ -105,6 +105,8 @@ sxr : FPS: 71.8x
 ## 9. Commit trail
 
 ```
+33d26d7b Qiyu: create controller entries, set beam transforms
+19fb6034 Qiyu: fix controller pose frame, click fallback, and render mode
 e05781c3 Qiyu: apply tracking offset to controller poses and log raw input
 ad24e384 docs: record Qiyu/SXR on-device lessons in AGENTS.md
 62ed3102 Qiyu: native SXR device delegate (qiyuapi) with WebXR support
