@@ -101,6 +101,14 @@ if(OPENXR)
     find_package(OpenXR REQUIRED CONFIG)
     target_link_libraries(native-lib PRIVATE OpenXR::headers)
     include_directories(${CMAKE_SOURCE_DIR}/../app/src/openxr/cpp)
+    if (QIYU)
+        include_directories(${CMAKE_SOURCE_DIR}/../app/src/qiyu/cpp)
+        if (DEFINED QIYU_SDK_DIR AND EXISTS "${QIYU_SDK_DIR}/Include")
+            include_directories("${QIYU_SDK_DIR}/Include")
+        elseif (DEFINED QIYU_SDK_DIR AND EXISTS "${QIYU_SDK_DIR}/QiyuNativeSDK/Include")
+            include_directories("${QIYU_SDK_DIR}/QiyuNativeSDK/Include")
+        endif()
+    endif()
     if (HVR)
         add_custom_command(TARGET native-lib POST_BUILD
                 COMMAND ${CMAKE_COMMAND} -E copy
@@ -129,6 +137,14 @@ if(OPENXR)
             ${CMAKE_SOURCE_DIR}/src/openxr/cpp/OpenXRExtensions.cpp
             ${CMAKE_SOURCE_DIR}/src/openxr/cpp/OpenXRPassthroughStrategy.cpp
     )
+    if (QIYU)
+        target_sources(
+                native-lib
+                PUBLIC
+                ${CMAKE_SOURCE_DIR}/src/qiyu/cpp/QiyuControllerBridge.cpp
+                ${CMAKE_SOURCE_DIR}/src/qiyu/cpp/DeviceDelegateQiyu.cpp
+        )
+    endif()
 endif()
 
 if(OCULUSVR)

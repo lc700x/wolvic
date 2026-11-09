@@ -17,8 +17,11 @@
 
 #include <memory>
 
+struct ANativeWindow;
+
 namespace crow {
 
+class BrowserEGLContext;
 class DeviceDelegate;
 typedef std::shared_ptr<DeviceDelegate> DeviceDelegatePtr;
 
@@ -89,6 +92,14 @@ public:
   virtual const std::string GetControllerModelName(const int32_t aModelIndex) const { return nullptr; };
   virtual bool IsPositionTrackingSupported() const { return false; };
   virtual void SetCPULevel(const device::CPULevel aLevel) {};
+  // Native presentation hooks (Qiyu SXR path); no-ops on OpenXR.
+  virtual void EnterVR(const BrowserEGLContext&) {};
+  virtual void LeaveVR() {};
+  virtual void SetNativeWindow(ANativeWindow*) {};
+  virtual bool IsInVRMode() const { return false; }
+  virtual bool ShouldExitRenderLoop() const { return false; }
+  virtual void OnDestroy() {}
+  virtual bool ExitApp() { return false; }
   virtual void ProcessEvents() = 0;
   virtual bool SupportsFramePrediction(FramePrediction aPrediction) const {
     return aPrediction == FramePrediction::NO_FRAME_AHEAD;

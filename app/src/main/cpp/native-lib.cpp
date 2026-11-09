@@ -21,6 +21,12 @@
 #if defined(OPENXR)
 #include "DeviceDelegateOpenXR.h"
 #endif
+#if defined(QIYU)
+// Native SXR delegate: presents straight to the SXR compositor (no OpenXR runtime).
+// WebXR keeps working because Gecko drives it through ExternalVR, not OpenXR.
+#include "DeviceDelegateQiyu.h"
+#include "DeviceUtils.h"
+#endif
 
 #define STR(x) #x
 #define TO_STRING(x) STR(x)
@@ -39,10 +45,7 @@
 
 using namespace crow;
 
-#if defined(OPENXR)
-typedef DeviceDelegateOpenXR PlatformDeviceDelegate;
-typedef DeviceDelegateOpenXRPtr PlatformDeviceDelegatePtr;
-#endif
+typedef DeviceDelegatePtr PlatformDeviceDelegatePtr;
 
 namespace {
 
@@ -95,6 +98,10 @@ CommandCallback(android_app *aApp, int32_t aCmd) {
     // after calling android_app_exec_cmd it will be set to NULL.
     case APP_CMD_TERM_WINDOW:
       VRB_LOG("APP_CMD_TERM_WINDOW");
+      // QiyuApi.h: qiyu_EndVR is normally called on APP_CMD_TERM_WINDOW/APP_CMD_PAUSE.
+      if (ctx->mDevice) {
+        ctx->mDevice->LeaveVR();
+      }
       if (ctx->mEgl) {
         ctx->mEgl->UpdateNativeWindow(nullptr);
       }
@@ -102,6 +109,9 @@ CommandCallback(android_app *aApp, int32_t aCmd) {
     // The app's activity has been paused.
     case APP_CMD_PAUSE:
       VRB_LOG("APP_CMD_PAUSE");
+      if (ctx->mDevice) {
+        ctx->mDevice->LeaveVR();
+      }
       BrowserWorld::Instance().Pause();
       break;
 
@@ -176,7 +186,22 @@ android_main(android_app *aAppState) {
   }
 #endif
 
-  sAppContext->mDevice = PlatformDeviceDelegate::Create(BrowserWorld::Instance().GetRenderContext(), &sAppContext->mJavaContext);
+#if defined(QIYU)
+  // Prefer the native SXR path on Qiyu hardware: it presents directly to the SXR
+  // compositor, matching the reference client (qiyu_StartVR / StartEye / SubmitFrame).
+  // The OpenXR path stays as a fallback if the device is not a known Qiyu model.
+  if (DeviceUtils::GetDeviceTypeFromSystem() != device::UnknownType) {
+    auto qiyu = DeviceDelegateQiyu::Create(BrowserWorld::Instance().GetRenderContext(),
+                                           &sAppContext->mJavaContext);
+    qiyu->SetNativeWindow(aAppState->window);
+    sAppContext->mDevice = qiyu;
+    VRB_LOG("Using native QIYU (SXR) device delegate");
+  } else
+#endif
+  {
+    sAppContext->mDevice = DeviceDelegateOpenXR::Create(BrowserWorld::Instance().GetRenderContext(),
+                                                        &sAppContext->mJavaContext);
+  }
   BrowserWorld::Instance().RegisterDeviceDelegate(sAppContext->mDevice);
 
   // Initialize java
@@ -185,11 +210,18 @@ android_main(android_app *aAppState) {
   jniEnv->DeleteLocalRef(assetManager);
 
   auto MaybeInitGLAndEnterVR = [aAppState]() {
-    if (!aAppState->window || !sAppContext->mEgl || BrowserWorld::Instance().IsGLInitialized())
+    if (!aAppState->window || !sAppContext->mEgl)
       return;
 
-    BrowserWorld::Instance().InitializeGL();
-    sAppContext->mDevice->EnterVR(*sAppContext->mEgl);
+    if (!BrowserWorld::Instance().IsGLInitialized()) {
+      BrowserWorld::Instance().InitializeGL();
+    }
+    // Re-enter VR after a pause/window recreation (QiyuApi.h: StartVR on
+    // APP_CMD_START/RESUME/INIT_WINDOW). OpenXR's EnterVR is idempotent.
+    if (!sAppContext->mDevice->IsInVRMode()) {
+      sAppContext->mDevice->SetNativeWindow(aAppState->window);
+      sAppContext->mDevice->EnterVR(*sAppContext->mEgl);
+    }
   };
   // If 0 returns immediately without blocking. If negative, waits indefinitely for events.
   auto computeALooperTimeout = [aAppState]() {
