@@ -307,7 +307,14 @@ struct DeviceDelegateQiyu::State {
     delegate.SetLeftHanded(index, leftHanded);
     delegate.SetTargetRayMode(index, device::TargetRayMode::TrackedPointer);
     delegate.SetCapabilityFlags(index, device::Orientation | device::Position | device::PositionEmulated);
-    delegate.SetTransform(index, ToWolvicMatrix(data.position, data.rotation));
+    // SXR reports controller poses in ground space, same as the head pose. The head
+    // transform subtracts trackingOffset (ground -> local); controllers must apply the
+    // same correction or they land ~headHeight below their real position and the pointer
+    // ray aims at the floor (the "controller cannot control" symptom). Mirrors ALVR's
+    // controller_motion()/head_pose(), which both subtract tracking_offset.
+    vrb::Matrix controllerTransform = ToWolvicMatrix(data.position, data.rotation);
+    controllerTransform.TranslateInPlace(vrb::Vector(0.0f, -trackingOffset, 0.0f));
+    delegate.SetTransform(index, controllerTransform);
     if (data.batteryLevel != lastBattery[hand]) {
       lastBattery[hand] = data.batteryLevel;
       delegate.SetBatteryLevel(index, data.batteryLevel);
