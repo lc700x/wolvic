@@ -313,11 +313,13 @@ struct DeviceDelegateQiyu::State {
     const float displayTimeMs = api.predictDisplayTime ? api.predictDisplayTime() : 0.0f;
     qiyu::HeadPoseState head = api.predictHeadPose(displayTimeMs);
 
-    // qiyu_PredictHeadPose behaves like a 3DoF pose on this firmware (its position does not
-    // carry the tracked translation), while qiyu_GetViewMatrix returns the full 6DoF eye
-    // poses that the official native sample renders with. Recover the head position from
-    // the inverse of the two view matrices and keep the predicted rotation.
+    // qiyu_PredictHeadPose is not the authoritative camera pose: the official native sample
+    // never renders from it, it only feeds it to qiyu_GetViewMatrix and renders with the
+    // returned view matrices. Use the inverse of those matrices as the head/eye transform
+    // (exactly what the sample renders with), so 6DoF position and rotation both come from
+    // SXR instead of a mixed hand-built pose.
     vrb::Vector viewHeadPos;
+    vrb::Matrix eyeWorld[2] { vrb::Matrix::Identity(), vrb::Matrix::Identity() };
     bool haveViewPose = false;
     if (api.getViewMatrix) {
       qiyu::Matrix4 leftMatrix{}, rightMatrix{};
@@ -326,9 +328,9 @@ struct DeviceDelegateQiyu::State {
                             deviceInfo.frustumLeftEye.rotation,
                             deviceInfo.frustumRightEye.rotation)) {
         trackingOffset = offset;
-        const vrb::Vector leftPos = ToWolvicMatrix(leftMatrix).AfineInverse().GetTranslation();
-        const vrb::Vector rightPos = ToWolvicMatrix(rightMatrix).AfineInverse().GetTranslation();
-        viewHeadPos = (leftPos + rightPos) * 0.5f;
+        eyeWorld[0] = ToWolvicMatrix(leftMatrix).AfineInverse();
+        eyeWorld[1] = ToWolvicMatrix(rightMatrix).AfineInverse();
+        viewHeadPos = (eyeWorld[0].GetTranslation() + eyeWorld[1].GetTranslation()) * 0.5f;
         haveViewPose = true;
       }
     }
@@ -344,10 +346,9 @@ struct DeviceDelegateQiyu::State {
 
     vrb::Matrix headMatrix;
     if (haveViewPose) {
-      headMatrix = vrb::Matrix::Rotation(
-          vrb::Quaternion(head.pose.rotation.x, head.pose.rotation.y,
-                          head.pose.rotation.z, head.pose.rotation.w));
-      headMatrix.PreMultiplyInPlace(vrb::Matrix::Position(viewHeadPos));
+      // Head = midpoint of the eye positions with the left eye's world rotation.
+      headMatrix = eyeWorld[0];
+      headMatrix.TranslateInPlace(viewHeadPos - eyeWorld[0].GetTranslation());
     } else {
       // Fallback to the predicted pose with the ground-mode correction from the sample.
       headMatrix = ToWolvicMatrix(head.pose.position, head.pose.rotation);
@@ -370,12 +371,20 @@ struct DeviceDelegateQiyu::State {
     cameras[0]->SetHeadTransform(headTransform);
     cameras[1]->SetHeadTransform(headTransform);
 
-    const qiyu::Vector3& leftPos = deviceInfo.frustumLeftEye.position;
-    const qiyu::Vector3& rightPos = deviceInfo.frustumRightEye.position;
-    const qiyu::Quaternion& leftRot = deviceInfo.frustumLeftEye.rotation;
-    const qiyu::Quaternion& rightRot = deviceInfo.frustumRightEye.rotation;
-    eyeTransforms[0] = ToWolvicMatrix(leftPos, leftRot);
-    eyeTransforms[1] = ToWolvicMatrix(rightPos, rightRot);
+    if (haveViewPose) {
+      // CameraEye composes head.PostMultiply(eye) = eye * head; solve eye so the result is
+      // the SDK eye world transform (eyeWorld * headInverse * head = eyeWorld).
+      const vrb::Matrix headInverse = headMatrix.AfineInverse();
+      eyeTransforms[0] = headInverse.PostMultiply(eyeWorld[0]);
+      eyeTransforms[1] = headInverse.PostMultiply(eyeWorld[1]);
+    } else {
+      const qiyu::Vector3& leftPos = deviceInfo.frustumLeftEye.position;
+      const qiyu::Vector3& rightPos = deviceInfo.frustumRightEye.position;
+      const qiyu::Quaternion& leftRot = deviceInfo.frustumLeftEye.rotation;
+      const qiyu::Quaternion& rightRot = deviceInfo.frustumRightEye.rotation;
+      eyeTransforms[0] = ToWolvicMatrix(leftPos, leftRot);
+      eyeTransforms[1] = ToWolvicMatrix(rightPos, rightRot);
+    }
     cameras[0]->SetEyeTransform(eyeTransforms[0]);
     cameras[1]->SetEyeTransform(eyeTransforms[1]);
     if (immersiveDisplay) {
