@@ -2016,40 +2016,8 @@ public class VRBrowserActivity extends PlatformActivity implements WidgetManager
             Log.w(LOGTAG, "Passthrough is not supported on this device; ignoring toggle");
             return;
         }
-        final boolean enable = !mIsPassthroughEnabled;
-        if (DeviceType.isQiyu() && !setQiyuSeeThrough(enable)) {
-            Log.w(LOGTAG, "QIYU: see-through request failed; keeping the opaque scene");
-            return;
-        }
-        mIsPassthroughEnabled = enable;
+        mIsPassthroughEnabled = !mIsPassthroughEnabled;
         queueRunnable(() -> togglePassthroughNative());
-    }
-
-    private static Boolean sQiyuSeeThroughAvailable;
-
-    private static boolean isQiyuSeeThroughAvailable() {
-        if (sQiyuSeeThroughAvailable == null) {
-            try {
-                Class.forName("com.qualcomm.sxrapi.SxrApi")
-                        .getMethod("sxrEnableSeeThrough", boolean.class);
-                sQiyuSeeThroughAvailable = true;
-            } catch (Throwable t) {
-                sQiyuSeeThroughAvailable = false;
-            }
-        }
-        return sQiyuSeeThroughAvailable;
-    }
-
-    private boolean setQiyuSeeThrough(boolean enabled) {
-        try {
-            Class<?> sxr = Class.forName("com.qualcomm.sxrapi.SxrApi");
-            sxr.getMethod("sxrEnableSeeThrough", boolean.class).invoke(null, enabled);
-            Log.i(LOGTAG, "QIYU: sxrEnableSeeThrough(" + enabled + ")");
-            return true;
-        } catch (Throwable t) {
-            Log.w(LOGTAG, "QIYU: sxrEnableSeeThrough unavailable: " + t);
-            return false;
-        }
     }
 
     @Override
@@ -2058,8 +2026,7 @@ public class VRBrowserActivity extends PlatformActivity implements WidgetManager
     }
     @Override
     public boolean isPassthroughSupported() {
-        return DeviceType.isOculusBuild() || DeviceType.isLynx() || DeviceType.isSnapdragonSpaces() || DeviceType.isPicoXR()
-                || (DeviceType.isQiyu() && isQiyuSeeThroughAvailable());
+        return DeviceType.isOculusBuild() || DeviceType.isLynx() || DeviceType.isSnapdragonSpaces() || DeviceType.isPicoXR();
     }
     @Override
     public boolean areControllersAvailable() {

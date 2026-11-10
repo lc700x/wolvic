@@ -854,12 +854,8 @@ DeviceDelegateQiyu::BindEye(const device::Eye aWhich) {
     }
   }
   VRB_GL_CHECK(glViewport(0, 0, static_cast<GLsizei>(m.eyeWidth), static_cast<GLsizei>(m.eyeHeight)));
-  // The newer SXR compositor honors the eye-buffer alpha (it is VST-aware).
-  // Keep it opaque unless passthrough is active, otherwise the compositor can
-  // treat the whole eye buffer as transparent and show a black scene.
-  const float clearAlpha = IsPassthroughEnabled() ? 0.0f : 1.0f;
   VRB_GL_CHECK(glClearColor(m.clearColor.Red(), m.clearColor.Green(),
-                            m.clearColor.Blue(), clearAlpha));
+                            m.clearColor.Blue(), m.clearColor.Alpha()));
   VRB_GL_CHECK(glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT));
 }
 

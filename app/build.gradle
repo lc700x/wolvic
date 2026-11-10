@@ -126,7 +126,7 @@ def qiyuControllerBridge = qiyuBridgeProperty == null ||
         qiyuBridgeProperty.toString().toBoolean()
 
 // Version names for Gecko and Chromium releases.
-def GECKO_VERSION_NAME = '1.11.6'
+def GECKO_VERSION_NAME = '1.11.7'
 def CHROMIUM_VERSION_NAME = '1.5'
 
 android {
@@ -260,7 +260,7 @@ android {
             }
             if (shouldUseStaticVersionCode()) {
                 // Overrides any build created with a generated version code from now to 2115
-                output.versionCodeOverride = 1_99_365_2306
+                output.versionCodeOverride = 1_99_365_2307
             } else if (variant.productFlavors[0].name.toLowerCase().startsWith('picoxr')) {
                 // PICO store requires a slightly different version code.
                 output.versionCodeOverride = generatedVersionCode + 1900000000
