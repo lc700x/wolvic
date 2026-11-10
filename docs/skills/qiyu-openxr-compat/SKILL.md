@@ -349,6 +349,27 @@ If the service refuses a third-party caller, the fallback is porting
 `DeviceDelegateQiyu` frame submission to the new `SxrApi`/`SvrView` path and
 then calling `sxrEnableSeeThrough`.
 
+### 6.4 Handoff and current status
+
+The end-to-end state, the evidence behind every conclusion above, the remaining
+open question and the renderer-port blueprint live in
+**`docs/qiyu-passthrough-handoff.md`**. Read it before touching passthrough
+again: it records the exact log lines to compare against and the device
+commands (`am start-service`, `content query`) that verify the path without
+rebuilding.
+
+Short version as of 1.11.11:
+
+- Display: old 2.2 MB `sxrApi-v8a-release.aar` with `qiyuapi`, eye buffers
+  created before `qiyu_StartVR`. Verified on device at 71.8-73 fps.
+- Passthrough: `QiyuSeeThrough` walks service start (`mode=3`, then `mode=1`),
+  then `com.qiyu.browser.vst.on`, then `AppVstStatus=1`, then
+  `sxrEnableSeeThrough`, and accepts only `RgbCameraStatus > 0`. Total failure
+  rolls everything back so a failed toggle can never leave a black scene.
+- Open question: whether `com.qiyi.seethroughservice` is exported and
+  permission-gated for third-party apps. 1.11.11 logs
+  `service ... exported=... permission=... process=...` at startup.
+
 ## 7. OpenXR path notes (when you cannot use native SXR)
 
 - Qiyu runtimes expose only `khr/simple_controller`; the **grip action may report
@@ -380,10 +401,12 @@ then calling `sxrEnableSeeThrough`.
 10. WebXR: `navigator.xr.isSessionSupported('immersive-vr') === true` and an
     immersive session starts. If only `inline` is true, check the external-VR
     shmem protocol (§2.1) before blaming the runtime.
-11. Passthrough: on the native `qiyuapi` renderer the toggle must stay
-    hidden. Do not enable it without moving the whole renderer to the newer
-    `QVR_*` stack; all partial approaches in §6.3 either black-screen or
-    SIGSEGV.
+11. Passthrough: the app-side contract is clearing the eye buffer with alpha 0
+    when `IsPassthroughEnabled()` is true; the cameras themselves are started by
+    `com.qiyi.seethroughservice` (§6.3). Confirm with
+    `QIYU: VST attempt N ... rgb=1`. If every attempt reports `rgb=0`, the
+    system refused the request and a renderer port is the only remaining route:
+    do not keep re-trying providers or broadcasts.
 
 Useful logcat filter:
 
