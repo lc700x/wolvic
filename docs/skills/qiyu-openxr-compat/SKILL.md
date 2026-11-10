@@ -1,6 +1,6 @@
 ---
 name: qiyu-openxr-compat
-description: Make Android VR / OpenXR apps work on iQIYI (Qiyu) headsets — Qiyu X, Qiyu 3, Dream, Dream Pro, MIX (A081) and Lenovo Legion VR700 (A091). Use when an app launches but renders wrong, shows a black screen, only gets 3DoF, places controllers above/behind the head, points the ray the wrong way, or cannot read buttons on a Qiyu device. Covers the native SXR (qiyuapi) path vs the OpenXR runtime, exact pose/6DoF handling, controller and button fallbacks, aim rays, firmware quirks, packaging/R8 rules and on-device verification.
+description: Make Android VR / OpenXR / WebXR apps work on iQIYI (Qiyu) headsets — Qiyu X, Qiyu 3, Dream, Dream Pro, MIX (A081) and Lenovo Legion VR700 (A091). Use when an app launches but renders wrong, shows a black screen, only gets 3DoF, places controllers above/behind the head, points the ray the wrong way, cannot read buttons, or reports only inline WebXR with immersive-vr unsupported. Covers the native SXR (qiyuapi) path vs the OpenXR runtime, the browser-engine external-VR shmem protocol, exact pose/6DoF handling, controller and button fallbacks, aim rays, firmware quirks, packaging/R8 rules and on-device verification.
 ---
 
 # Qiyu (iQIYI) VR compatibility skill
@@ -39,6 +39,10 @@ Firefox Reality 12.3 and the Qiyu Unity/Unreal SDKs.
 10. **MIX (A081) must degrade, not crash** (no OpenXR broker, missing
     `libStereoRectifyWrapper.so`). **VR700 (A091) on Monado shows double-warp**
     due to an FOV mismatch; the native SXR path avoids it.
+11. **WebXR through a browser engine is a shared-memory protocol contract.**
+    If `navigator.xr` and inline sessions work but `immersive-vr` is unsupported,
+    compare the external-VR shmem `version`/`sizeof` with the engine build
+    before touching OpenXR; the engine rejects a mismatched shmem silently.
 
 ## 1. Device / runtime matrix
 
@@ -66,6 +70,40 @@ Important: **WebXR does not require an OpenXR runtime.** If your app is a Gecko-
 or Chromium-based browser, WebXR is driven through the engine's VR bridge
 (e.g. Gecko `ExternalVR` / VRManager IPC), so the native SXR compositor path can
 serve both the browser UI and WebXR.
+
+### 2.1 WebXR through a browser engine: match the external-VR protocol
+
+When the app embeds GeckoView/Chromium instead of owning the WebXR runtime, the
+app publishes head/eye/controller state to the engine through shared memory
+(Gecko: `ExternalVR` + `GeckoVRManager.setExternalContext()`). That struct is a
+strict ABI contract, not a hint.
+
+**Symptom of a mismatch:** `navigator.xr` exists, inline sessions and gamepads
+work, but `isSessionSupported('immersive-vr')` is false and
+<https://immersiveweb.dev/> lists only *WebXR Device API / Gamepads / Inline*.
+Nothing is logged, and the native device delegate/SXR runs perfectly.
+
+**Cause:** Gecko's `VRShMem::CreateShMemForAndroid()` reads `version` and `size`
+from the shmem and silently drops the context when they differ from
+`kVRExternalVersion` / `sizeof(VRExternalShmem)`. Stock GeckoView 153 uses
+protocol **v19** (`SHMEM_VERSION "0.0.12"`); Wolvic's patched GeckoView
+(`Igalia/wolvic-gecko-patches`, branch `gecko-153esr`) uses **v21**
+(`"0.0.13"`). The layouts differ materially: `eyeTranslation` vs
+`eyeTransform`, one `blendMode` vs `blendModes[]`, no
+`ImmersiveXRSessionType`, different controller enums.
+
+**Fix options:**
+1. Match the app to the engine: ship the engine's stock header for that flavor
+   and map the richer app API onto it (translation from the eye matrix, first
+   supported blend mode, VR-only session type, stock controller enums). Keep the
+   patched header for builds that link patched GeckoView.
+2. Or build the engine from the patched tree and point the build at it
+   (`dependencySubstitutions.geckoviewTopsrcdir` / `...Topobjdir` for Wolvic).
+
+Do **not** try to fix this by adding an OpenXR runtime: the engine never queries
+OpenXR for this path. Verify with a page that logs
+`navigator.xr.isSessionSupported()` for `inline`, `immersive-vr` and
+`immersive-ar`.
 
 ## 3. Packaging (Android, native SXR path)
 
@@ -282,6 +320,9 @@ service (`VRSDKCore` / `ash_reader`, or the SXR controller API) instead of
 7. Trigger/squeeze/face buttons click; check the touch-as-click fallback log.
 8. Pause/resume re-enters VR; no black screen on the next launch (EndVR ran).
 9. MIX: app exits/degrade cleanly. VR700: no bands/snow on the native path.
+10. WebXR: `navigator.xr.isSessionSupported('immersive-vr') === true` and an
+    immersive session starts. If only `inline` is true, check the external-VR
+    shmem protocol (§2.1) before blaming the runtime.
 
 Useful logcat filter:
 
@@ -304,6 +345,7 @@ adb logcat -c && adb logcat | findstr /C:"QIYU:" /C:"native QIYU" /C:"sxr " ^
 | Creating controllers only after `isConnect` | No model/beam, no input, "controller doesn't work" |
 | Missing `EndVR` | Black screen on the next launch |
 | Assuming analog trigger exists | Nothing is clickable |
+| Ignoring the external-VR shmem version / assuming WebXR needs OpenXR | `navigator.xr` + inline work, `immersive-vr` is unsupported, no logs |
 
 ## 10. Reference material
 

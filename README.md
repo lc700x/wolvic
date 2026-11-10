@@ -117,7 +117,7 @@ Prebuilt APKs are published on the [releases page](https://github.com/lc700x/wol
 ### Qiyu status
 
 - **Qiyu X**: 6DoF head tracking, both controllers (model, laser beam, clicks),
-  WebXR, ~72 fps at 1920×1920 per eye.
+  immersive WebXR (stock GeckoView protocol v19), ~72 fps at 1920×1920 per eye.
 - **MIX (A081)**: the firmware has no OpenXR runtime broker and lacks
   `libStereoRectifyWrapper.so`; the app degrades instead of crashing, but VR is
   not usable on that firmware.
