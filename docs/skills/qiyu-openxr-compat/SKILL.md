@@ -309,24 +309,22 @@ latch makes the trigger permanently touch-sensitive.
 
 Passthrough on Qiyu is the vendor's VST pipeline, not an OpenXR feature.
 
-- Use the newer official SDK set from `Qiyu_UnityXR_SDK_v1.6.1.zip` →
-  `Runtime/Android/svrApi-release.aar`. `SxrApi.sxrEnableSeeThrough(boolean)`
-  is **not** exported by the old native SDK's `sxrApi` AAR (2.2 MB
-  `libsxrapi.so`); the newer one (5.0 MB) has it plus
-  `sxrSetSeeThroughCallback` and the `VST_*`/`SvrStartSeeThrough` symbols.
-- The newer `libsxrapi.so` has `DT_NEEDED` entries for
-  `libseethroughsdk.so`, `libseethrough-core.so`, `libqiyuseethrough.so`,
-  `libqiyuinterface.so`, `libcameralibrary2.so`, `librelocationsdk.so`.
-  Package them together or the loader fails before your app starts.
-- Declare `android.permission.CAMERA` (the official AAR does).
-- Toggle with `SxrApi.sxrEnableSeeThrough(enabled)` and gate the UI on the
-  method existing (reflection is enough). Stop drawing the opaque
-  environment/skybox and clear the eye buffer with alpha 0; the compositor
-  blends the camera image through.
-- Symptom of using the old AAR: the toggle exists but nothing happens, and
-  `dlsym`/reflection finds no `sxrEnableSeeThrough`. FxR 12.3 bundles the
-  newer set (`libsxrapi.so` ≈ 5.04 MB + the see-through libs), which is the
-  working reference.
+- The control plane is the system provider:
+  `content://com.iqiyi.vr.provider/vst/2`, column `status_value` (`1` on,
+  `0` off). This is what `SxrApi.sxrEnableSeeThrough` and FxR's
+  `SeeThroughHelper.writeAppStatus()` use.
+- Enable it with a normal `ContentResolver.update()`; gate the menu on
+  `PackageManager.resolveContentProvider("com.iqiyi.vr.provider", 0)`, and
+  only flip the app's passthrough state when `update()` returns > 0.
+  Otherwise a rejected request hides the opaque scene and leaves black.
+- Stop drawing the opaque environment/skybox and clear the eye buffer with
+  alpha 0; the compositor blends the camera image through.
+- **Do not replace the old `sxrApi` AAR with the newer 5 MB
+  `svrApi-release.aar` from `Qiyu_UnityXR_SDK_v1.6.1.zip`.** It starts SXR
+  and reports ~72 fps, but the native `qiyuapi` render path shows a black
+  scene on Qiyu X. Keep the old SXR libs and use the provider.
+- FxR 12.3 bundles the newer SXR set and uses `sxrEnableSeeThrough`; treat it
+  as a reference for the provider contract, not as a drop-in library swap.
 
 ## 7. OpenXR path notes (when you cannot use native SXR)
 
@@ -360,9 +358,9 @@ Passthrough on Qiyu is the vendor's VST pipeline, not an OpenXR feature.
     immersive session starts. If only `inline` is true, check the external-VR
     shmem protocol (§2.1) before blaming the runtime.
 11. Passthrough: the toggle reveals the real world and logcat shows the
-    see-through call. If it does nothing, verify the newer `svrApi` AAR
-    (5 MB `libsxrapi.so` with `sxrEnableSeeThrough`) and the `CAMERA`
-    permission.
+    provider update (`see-through enabled (provider rows=1)`). If it does
+    nothing, check that `com.iqiyi.vr.provider` exists and accepts the
+    update; do not swap `libsxrapi.so` to "fix" it.
 
 Useful logcat filter:
 
@@ -387,7 +385,8 @@ adb logcat -c && adb logcat | findstr /C:"QIYU:" /C:"native QIYU" /C:"sxr " ^
 | Assuming analog trigger exists | Nothing is clickable |
 | Ignoring the external-VR shmem version / assuming WebXR needs OpenXR | `navigator.xr` + inline work, `immersive-vr` is unsupported, no logs |
 | Lowering the trigger threshold below 0.5 / latching touch-as-click on the first frame | Trigger clicks on mere touch |
-| Expecting passthrough from the old `sxrApi` AAR | No `sxrEnableSeeThrough` symbol; toggle does nothing |
+| Replacing `libsxrapi.so` with the newer 5 MB Unity-SDK build | SXR starts at ~72 fps but the native `qiyuapi` scene is black |
+| Calling see-through without checking the provider result | Opaque scene hidden, black screen, no passthrough |
 
 ## 10. Reference material
 

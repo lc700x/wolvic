@@ -2012,39 +2012,48 @@ public class VRBrowserActivity extends PlatformActivity implements WidgetManager
 
     @Override
     public void togglePassthrough() {
-        mIsPassthroughEnabled = !mIsPassthroughEnabled;
-        if (DeviceType.isQiyu()) {
-            setQiyuSeeThrough(mIsPassthroughEnabled);
+        final boolean enable = !mIsPassthroughEnabled;
+        // Qiyu VST is controlled by the system provider that the Qiyu home app
+        // exposes. Only flip our state (and stop drawing the opaque world) when
+        // the request was actually accepted, otherwise the user would get a
+        // black scene instead of passthrough.
+        if (DeviceType.isQiyu() && !setQiyuSeeThrough(enable)) {
+            Log.w(LOGTAG, "QIYU: passthrough request rejected; keeping the opaque scene");
+            return;
         }
+        mIsPassthroughEnabled = enable;
         queueRunnable(() -> togglePassthroughNative());
     }
 
-    /**
-     * Qiyu VST (video see-through) is driven by the vendor SXR API. Use reflection so
-     * non-Qiyu builds (and the pure-OpenXR Qiyu build without the SDK AAR) still compile.
-     */
     private static Boolean sQiyuSeeThroughAvailable;
 
-    private static boolean isQiyuSeeThroughAvailable() {
+    private boolean isQiyuSeeThroughAvailable() {
         if (sQiyuSeeThroughAvailable == null) {
-            try {
-                Class.forName("com.qualcomm.sxrapi.SxrApi")
-                        .getMethod("sxrEnableSeeThrough", boolean.class);
-                sQiyuSeeThroughAvailable = true;
-            } catch (Throwable t) {
-                sQiyuSeeThroughAvailable = false;
-            }
+            sQiyuSeeThroughAvailable = getPackageManager()
+                    .resolveContentProvider("com.iqiyi.vr.provider", 0) != null;
         }
         return sQiyuSeeThroughAvailable;
     }
 
-    private void setQiyuSeeThrough(boolean enabled) {
+    /**
+     * Qiyu VST (video see-through) is driven by the system see-through service.
+     * Its control plane is content://com.iqiyi.vr.provider/vst/2 (status_value),
+     * the same provider FxR and the newer SxrApi use. Going through the provider
+     * keeps the known-good SXR renderer instead of replacing libsxrapi.so.
+     */
+    private boolean setQiyuSeeThrough(boolean enabled) {
         try {
-            Class<?> sxrApi = Class.forName("com.qualcomm.sxrapi.SxrApi");
-            sxrApi.getMethod("sxrEnableSeeThrough", boolean.class).invoke(null, enabled);
-            Log.i(LOGTAG, "QIYU: see-through " + (enabled ? "enabled" : "disabled"));
+            android.content.ContentValues values = new android.content.ContentValues();
+            values.put("status_value", enabled ? "1" : "0");
+            int updated = getContentResolver().update(
+                    android.net.Uri.parse("content://com.iqiyi.vr.provider/vst/2"),
+                    values, null, null);
+            Log.i(LOGTAG, "QIYU: see-through " + (enabled ? "enabled" : "disabled")
+                    + " (provider rows=" + updated + ")");
+            return updated > 0;
         } catch (Throwable t) {
-            Log.w(LOGTAG, "QIYU: see-through unavailable: " + t);
+            Log.w(LOGTAG, "QIYU: see-through provider unavailable: " + t);
+            return false;
         }
     }
 

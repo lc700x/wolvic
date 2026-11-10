@@ -30,6 +30,9 @@ namespace {
 // triggerForce > 0.5f and gripForce > 0.5f. A lower threshold makes the
 // trigger fire as soon as the finger touches it.
 constexpr float kClickThreshold = 0.5f;
+// Firmware that only reports touch bits gets a deliberate hold-to-click
+// fallback; a brush of the trigger must not click.
+constexpr double kTouchClickHoldMs = 250.0;
 constexpr int kMaxControllers = 2;
 
 // The Qiyu native SDK returns poses in the same right-handed, Y-up, -Z-forward
@@ -460,50 +463,56 @@ struct DeviceDelegateQiyu::State {
     }
 
     // Official Qiyu input mapping: trigger/grip come from the analog forces with a
-    // 0.5 threshold; A/X/B/Y and menu come from the press bits. Some Qiyu X firmware
-    // never delivers press bits or analog values (touch=0x1 while button=0x0 and
-    // trigger=0.00), so keep a touch-as-click fallback -- but only after the
-    // controller has been connected for a while without ever reporting analog or
-    // press input. The old code latched on the first trigger touch, which made
-    // controllers with working analog triggers click on mere touch.
-    struct InputFallbackState {
-      bool analogSeen { false };
-      bool pressBitSeen { false };
-      int framesWithoutInput { 0 };
-      bool touchAsClick { false };
+    // 0.5 threshold; A/X/B/Y and menu come from the press bits. Only firmware that
+    // never reports an analog force or a press bit gets a fallback, and that
+    // fallback requires a deliberate 250 ms hold so a light touch cannot click.
+    struct TouchFallbackState {
+      bool analogOrPressSeen { false };
+      double triggerTouchStartMs { 0.0 };
+      double gripTouchStartMs { 0.0 };
+      bool triggerHeld { false };
+      bool gripHeld { false };
     };
-    static InputFallbackState sInputFallback[2];
-    InputFallbackState& input = sInputFallback[hand];
-    if (data.triggerForce > 0.01f || data.gripForce > 0.01f) {
-      input.analogSeen = true;
+    static TouchFallbackState sTouchFallback[2];
+    TouchFallbackState& fallback = sTouchFallback[hand];
+    const double now = NowMs();
+    if (data.triggerForce > 0.01f || data.gripForce > 0.01f || data.button != 0) {
+      fallback.analogOrPressSeen = true;
     }
-    if (data.button != 0) {
-      input.pressBitSeen = true;
-    }
-    if (input.analogSeen || input.pressBitSeen) {
-      input.touchAsClick = false;
-      input.framesWithoutInput = 0;
-    } else if (++input.framesWithoutInput == 120) {
-      // ~1.7 s at 72 Hz: give the controller time to report its first real value.
-      input.touchAsClick = true;
-      VRB_LOG("QIYU: controller %d exposes no analog/press input; using touch as click", hand);
-    }
-    const bool touchAsClick = input.touchAsClick;
+    auto touchHeld = [&](double& startMs, bool touched, bool& held) {
+      if (fallback.analogOrPressSeen || !touched) {
+        startMs = 0.0;
+        held = false;
+        return false;
+      }
+      if (startMs == 0.0) {
+        startMs = now;
+        return false;
+      }
+      if (!held && now - startMs >= kTouchClickHoldMs) {
+        held = true;
+      }
+      return held;
+    };
+    const bool triggerHeld = touchHeld(fallback.triggerTouchStartMs,
+                                       (data.buttonTouch & qiyu::BT_Trigger) != 0,
+                                       fallback.triggerHeld);
+    const bool gripHeld = touchHeld(fallback.gripTouchStartMs,
+                                    (data.buttonTouch & qiyu::BT_Grip) != 0,
+                                    fallback.gripHeld);
     const bool triggerPressed = (data.button & qiyu::BT_Trigger) != 0 ||
                                 data.triggerForce > kClickThreshold ||
-                                (touchAsClick && (data.buttonTouch & qiyu::BT_Trigger) != 0);
+                                triggerHeld;
     const bool triggerTouched = (data.buttonTouch & qiyu::BT_Trigger) != 0 || data.triggerForce > 0.001f;
     const bool squeezePressed = (data.button & qiyu::BT_Grip) != 0 ||
                                 data.gripForce > kClickThreshold ||
-                                (touchAsClick && (data.buttonTouch & qiyu::BT_Grip) != 0);
+                                gripHeld;
     const bool squeezeTouched = (data.buttonTouch & qiyu::BT_Grip) != 0 || data.gripForce > 0.001f;
     const bool stickPressed = (data.button & qiyu::BT_JoyStick) != 0;
     const bool stickTouched = (data.buttonTouch & qiyu::BT_JoyStick) != 0;
-    const bool axPressed = (data.button & qiyu::BT_A_X) != 0 ||
-                           (touchAsClick && (data.buttonTouch & qiyu::BT_A_X) != 0);
+    const bool axPressed = (data.button & qiyu::BT_A_X) != 0;
     const bool axTouched = (data.buttonTouch & qiyu::BT_A_X) != 0;
-    const bool byPressed = (data.button & qiyu::BT_B_Y) != 0 ||
-                           (touchAsClick && (data.buttonTouch & qiyu::BT_B_Y) != 0);
+    const bool byPressed = (data.button & qiyu::BT_B_Y) != 0;
     const bool byTouched = (data.buttonTouch & qiyu::BT_B_Y) != 0;
     const bool menuPressed = (data.button & qiyu::BT_Home_Menu) != 0;
 

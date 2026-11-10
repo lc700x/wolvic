@@ -14,7 +14,7 @@ Branch: `main` (repo `lc700x/wolvic`), tip at the time of writing: `33d26d7b`.
 | Qiyu X (native SXR path) | **VR renders**: `qiyu_Init=1`, eye buffers `1920x1920`, `sxrBeginXr` OK, `qiyu_StartVR=1`, steady **71.8 fps**, no Monado, no warp starvation |
 | WebXR | Routes through Gecko `ExternalVR` (VRManager IPC), so it does **not** need OpenXR. The Qiyu flavor speaks the stock GeckoView protocol v19 (`moz_external_vr_v19.h`), so immersive sessions are advertised without a patched GeckoView build |
 | Qiyu X controller | Detected (`controller 1 connected battery=100`), pose+haptics plumbed, controller entries created with the generic trigger model, official input mapping (`triggerForce`/`gripForce` > 0.5, `button` press bits), touch-as-click only after ~2 s without any analog/press value, beam transforms wired |
-| Passthrough (VST) | Toggle calls `SxrApi.sxrEnableSeeThrough(boolean)`; requires the newer `svrApi-release.aar` from `Qiyu_UnityXR_SDK_v1.6.1.zip` (5 MB `libsxrapi.so` + see-through libs) and `CAMERA` permission |
+| Passthrough (VST) | Toggle writes `status_value=1/0` to `content://com.iqiyi.vr.provider/vst/2`; only flips when the provider accepts. Keeps the known-good `sxrApi` AAR (the newer 5 MB `libsxrapi.so` renders black on Qiyu X) |
 | Qiyu MIX (A081) | App no longer crash-loops; firmware has **no OpenXR runtime broker** and lacks `libStereoRectifyWrapper.so`, so VR is not usable there yet |
 | Qiyu Dream/VR700 (A091) | OpenXR path works structurally (Monado `QIYIVR`), but shows runtime-side warp artifacts (see §5) |
 
@@ -61,7 +61,7 @@ Copy-Item -Force app\build\outputs\apk\qiyuArm64GeckoGeneric\release\Wolvic-qiyu
 - Release APK is currently **debug-signed** (`userProperties.useDebugSigningOnRelease=true`) — sideload/QA only.
 - `versionCode` is static (`userProperties.useStaticVersionCode=true`).
 - Qiyu SDK path comes from `local.properties` → `qiyuSdkDir=F:/wolvic/third_party/qiyu` (`Include/` + `Lib/*release*.aar`).
-- For passthrough, put the newer `svrApi-release.aar` from `Qiyu_UnityXR_SDK_v1.6.1.zip` (`Runtime/Android/`) in `Lib/` and remove/rename the old `sxrApi-v8a-release.aar`; both contain `libsxrapi.so`, so they cannot be packaged together.
+- Keep `sxrApi-v8a-release.aar`; do not replace it with the newer `svrApi-release.aar` from `Qiyu_UnityXR_SDK_v1.6.1.zip`. That newer `libsxrapi.so` starts SXR at ~72 fps but the native `qiyuapi` path renders a black scene on Qiyu X. Passthrough uses the system provider instead.
 - Pure-OpenXR fallback build: add `-PqiyuControllerBridge=false` (no SDK classes/libs).
 
 ## 5. Known issues / open work
@@ -98,7 +98,7 @@ sxr : FPS: 71.8x
 - Follow `third_party/qiyu/Include/QiyuApi.h` ordering: `StartEye` after the eye FBO bind, `EndEye` after the eye, `StartVR` on START/RESUME/INIT_WINDOW, `EndVR` on PAUSE/TERM_WINDOW, `Update(dt)` before render.
 - A stale SXR session (no `EndVR`) presents as a black screen on the next launch.
 - Controller thresholds follow the official sample: `triggerForce > 0.5f`, `gripForce > 0.5f`; anything lower is touch-sensitive.
-- Passthrough is vendor VST (`SxrApi.sxrEnableSeeThrough`), not OpenXR, and needs the newer `svrApi-release.aar` (the old `libsxrapi.so` has no see-through symbols).
+- Passthrough is vendor VST, not OpenXR: write `status_value=1/0` to `content://com.iqiyi.vr.provider/vst/2`. Do not replace `libsxrapi.so` with the newer 5 MB Unity-SDK build; it black-screens the native `qiyuapi` renderer.
 
 ## 8. Reference material used
 
