@@ -741,14 +741,15 @@ DeviceDelegateQiyu::EnterVR(const BrowserEGLContext& aEGLContext) {
     VRB_ERROR("QIYU: cannot enter VR, qiyu_Init failed");
     return;
   }
+  // FxR's SvrView creates its eye textures *after* sxrBeginXr. With the
+  // newer SXR libraries, creating them before the session exists leaves the
+  // compositor sampling a black texture. Only reserve the size here; create
+  // the buffers once qiyu_StartVR has started the SXR session.
   if (m.eyeWidth == 0 || m.eyeHeight == 0) {
-    const uint32_t w = static_cast<uint32_t>(std::max(m.deviceInfo.iEyeTargetWidth, 1));
-    const uint32_t h = static_cast<uint32_t>(std::max(m.deviceInfo.iEyeTargetHeight, 1));
-    if (!m.CreateEyeBuffers(w, h)) {
-      VRB_ERROR("QIYU: cannot create eye buffers");
-      return;
-    }
+    m.eyeWidth = static_cast<uint32_t>(std::max(m.deviceInfo.iEyeTargetWidth, 1));
+    m.eyeHeight = static_cast<uint32_t>(std::max(m.deviceInfo.iEyeTargetHeight, 1));
   }
+  VRB_LOG("QIYU: eye target %ux%u", m.eyeWidth, m.eyeHeight);
   if (!m.window) {
     VRB_ERROR("QIYU: no ANativeWindow for qiyu_StartVR");
     return;
@@ -786,6 +787,10 @@ DeviceDelegateQiyu::EnterVR(const BrowserEGLContext& aEGLContext) {
   }
   if (m.api.setFoveation) {
     m.api.setFoveation(qiyu::FL_Low, nullptr);
+  }
+  if (!m.CreateEyeBuffers(m.eyeWidth, m.eyeHeight)) {
+    VRB_ERROR("QIYU: cannot create eye buffers");
+    return;
   }
   if (m.api.postSetEyeBufferSize) {
     m.api.postSetEyeBufferSize(static_cast<int>(m.eyeWidth), static_cast<int>(m.eyeHeight));
@@ -854,8 +859,10 @@ DeviceDelegateQiyu::BindEye(const device::Eye aWhich) {
     }
   }
   VRB_GL_CHECK(glViewport(0, 0, static_cast<GLsizei>(m.eyeWidth), static_cast<GLsizei>(m.eyeHeight)));
+  // The newer SXR compositor honours the eye-buffer alpha (VST-aware).
+  const float clearAlpha = IsPassthroughEnabled() ? 0.0f : 1.0f;
   VRB_GL_CHECK(glClearColor(m.clearColor.Red(), m.clearColor.Green(),
-                            m.clearColor.Blue(), m.clearColor.Alpha()));
+                            m.clearColor.Blue(), clearAlpha));
   VRB_GL_CHECK(glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT));
 }
 
