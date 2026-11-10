@@ -309,22 +309,24 @@ latch makes the trigger permanently touch-sensitive.
 
 Passthrough on Qiyu is the vendor's VST pipeline, not an OpenXR feature.
 
-- The control plane is the system provider:
-  `content://com.iqiyi.vr.provider/vst/2`, column `status_value` (`1` on,
-  `0` off). This is what `SxrApi.sxrEnableSeeThrough` and FxR's
-  `SeeThroughHelper.writeAppStatus()` use.
-- Enable it with a normal `ContentResolver.update()`; gate the menu on
-  `PackageManager.resolveContentProvider("com.iqiyi.vr.provider", 0)`, and
-  only flip the app's passthrough state when `update()` returns > 0.
-  Otherwise a rejected request hides the opaque scene and leaves black.
+- The system provider `content://com.iqiyi.vr.provider/vst/2` (`status_value`
+  `1`/`0`) is only the **status flag**: writing it sets `AppVstStatus` but
+  leaves `RgbCameraStatus` at 0. The scene goes black because the camera never
+  starts.
+- Start the pipeline with `QVR_EnableSeeThrough(bool)` from
+  `libQiyuXRCore.so` (Unity SDK 1.6.1 `QiyuXRCore.aar`, with its duplicate
+  `jni/**/libashreader.so` removed), then update the provider to 1/0.
+- Gate the menu on `QVR_GetPassthroughCapabilities() > 0` **and** the provider
+  existing. Flip the app's passthrough state only when both the native call
+  and the provider update succeed; otherwise keep the opaque scene.
 - Stop drawing the opaque environment/skybox and clear the eye buffer with
-  alpha 0; the compositor blends the camera image through.
+  alpha 0 so the compositor can blend the camera image through.
 - **Do not replace the old `sxrApi` AAR with the newer 5 MB
-  `svrApi-release.aar` from `Qiyu_UnityXR_SDK_v1.6.1.zip`.** It starts SXR
-  and reports ~72 fps, but the native `qiyuapi` render path shows a black
-  scene on Qiyu X. Keep the old SXR libs and use the provider.
+  `svrApi-release.aar` from the same SDK.** It starts SXR at ~72 fps but the
+  native `qiyuapi` render path shows a black scene on Qiyu X. Keep the old
+  SXR renderer and load `libQiyuXRCore.so` only for VST.
 - FxR 12.3 bundles the newer SXR set and uses `sxrEnableSeeThrough`; treat it
-  as a reference for the provider contract, not as a drop-in library swap.
+  as a reference for the VST sequence, not as a drop-in library swap.
 
 ## 7. OpenXR path notes (when you cannot use native SXR)
 
@@ -357,10 +359,11 @@ Passthrough on Qiyu is the vendor's VST pipeline, not an OpenXR feature.
 10. WebXR: `navigator.xr.isSessionSupported('immersive-vr') === true` and an
     immersive session starts. If only `inline` is true, check the external-VR
     shmem protocol (§2.1) before blaming the runtime.
-11. Passthrough: the toggle reveals the real world and logcat shows the
-    provider update (`see-through enabled (provider rows=1)`). If it does
-    nothing, check that `com.iqiyi.vr.provider` exists and accepts the
-    update; do not swap `libsxrapi.so` to "fix" it.
+11. Passthrough: the toggle reveals the real world and logcat shows
+    `QVR_EnableSeeThrough(1) = 1` plus
+    `see-through enabled (provider rows=1)`. If it does nothing, check the
+    capability call, the `QiyuXRCore` library, and the provider; do not swap
+    `libsxrapi.so` to "fix" it.
 
 Useful logcat filter:
 
@@ -386,7 +389,8 @@ adb logcat -c && adb logcat | findstr /C:"QIYU:" /C:"native QIYU" /C:"sxr " ^
 | Ignoring the external-VR shmem version / assuming WebXR needs OpenXR | `navigator.xr` + inline work, `immersive-vr` is unsupported, no logs |
 | Lowering the trigger threshold below 0.5 / latching touch-as-click on the first frame | Trigger clicks on mere touch |
 | Replacing `libsxrapi.so` with the newer 5 MB Unity-SDK build | SXR starts at ~72 fps but the native `qiyuapi` scene is black |
-| Calling see-through without checking the provider result | Opaque scene hidden, black screen, no passthrough |
+| Writing only the VST provider status and expecting passthrough | `AppVstStatus=1`, `RgbCameraStatus=0`, black background |
+| Flipping passthrough without `QVR_EnableSeeThrough` | Opaque scene hidden, black screen, no camera |
 
 ## 10. Reference material
 

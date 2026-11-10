@@ -2027,10 +2027,15 @@ public class VRBrowserActivity extends PlatformActivity implements WidgetManager
 
     private static Boolean sQiyuSeeThroughAvailable;
 
+    private static native boolean nativeSetQiyuSeeThrough(boolean enabled);
+    private static native int nativeQiyuPassthroughCapabilities();
+
     private boolean isQiyuSeeThroughAvailable() {
         if (sQiyuSeeThroughAvailable == null) {
-            sQiyuSeeThroughAvailable = getPackageManager()
-                    .resolveContentProvider("com.iqiyi.vr.provider", 0) != null;
+            sQiyuSeeThroughAvailable = DeviceType.isQiyu()
+                    && nativeQiyuPassthroughCapabilities() > 0
+                    && getPackageManager()
+                            .resolveContentProvider("com.iqiyi.vr.provider", 0) != null;
         }
         return sQiyuSeeThroughAvailable;
     }
@@ -2042,6 +2047,14 @@ public class VRBrowserActivity extends PlatformActivity implements WidgetManager
      * keeps the known-good SXR renderer instead of replacing libsxrapi.so.
      */
     private boolean setQiyuSeeThrough(boolean enabled) {
+        // The provider only publishes AppVstStatus; the vendor library has to
+        // start the camera/VST pipeline. libQiyuXRCore.so is the standalone
+        // Unity-SDK core (it keeps dlopen'ing libsxrapi lazily, so it does not
+        // replace the known-good renderer).
+        if (!nativeSetQiyuSeeThrough(enabled)) {
+            Log.w(LOGTAG, "QIYU: QVR_EnableSeeThrough(" + enabled + ") failed");
+            return false;
+        }
         try {
             android.content.ContentValues values = new android.content.ContentValues();
             values.put("status_value", enabled ? "1" : "0");
@@ -2050,9 +2063,14 @@ public class VRBrowserActivity extends PlatformActivity implements WidgetManager
                     values, null, null);
             Log.i(LOGTAG, "QIYU: see-through " + (enabled ? "enabled" : "disabled")
                     + " (provider rows=" + updated + ")");
-            return updated > 0;
+            if (updated <= 0) {
+                nativeSetQiyuSeeThrough(false);
+                return false;
+            }
+            return true;
         } catch (Throwable t) {
             Log.w(LOGTAG, "QIYU: see-through provider unavailable: " + t);
+            nativeSetQiyuSeeThrough(false);
             return false;
         }
     }

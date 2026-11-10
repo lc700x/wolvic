@@ -119,10 +119,11 @@ Prebuilt APKs are published on the [releases page](https://github.com/lc700x/wol
 - **Qiyu X**: 6DoF head tracking, both controllers (model, laser beam, official
   0.5 trigger/grip thresholds, clicks), immersive WebXR (stock GeckoView protocol
   v19), ~72 fps at 1920×1920 per eye.
-- **Passthrough**: video see-through through the system VST provider
-  (`content://com.iqiyi.vr.provider/vst/2`), the same control plane FxR uses.
-  The toggle only flips when the provider accepts the request; a rejected
-  request keeps the opaque scene instead of going black.
+- **Passthrough**: video see-through driven by `QVR_EnableSeeThrough` from
+  `libQiyuXRCore.so` plus the system provider
+  (`content://com.iqiyi.vr.provider/vst/2`). The toggle is only shown when the
+  vendor reports passthrough capability and only flips when both calls
+  succeed, so a rejected request keeps the opaque scene instead of going black.
   Do not swap in the newer `svrApi-release.aar`: its 5 MB `libsxrapi.so`
   breaks the native `qiyuapi` render path (black scene) on Qiyu X.
 - **MIX (A081)**: the firmware has no OpenXR runtime broker and lacks

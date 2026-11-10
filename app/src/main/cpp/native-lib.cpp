@@ -5,6 +5,7 @@
 
 #include <jni.h>
 #include <string>
+#include <dlfcn.h>
 #include <GLES2/gl2.h>
 
 #include "BrowserWorld.h"
@@ -299,6 +300,59 @@ JNI_METHOD(jboolean, platformExit)
     return (jboolean) sAppContext->mDevice->ExitApp();
   }
   return (jboolean) false;
+}
+
+namespace {
+void* sQiyuXRCoreHandle = nullptr;
+bool (*sQvrEnableSeeThrough)(bool) = nullptr;
+int (*sQvrGetPassthroughCapabilities)() = nullptr;
+
+bool
+LoadQiyuXRCore() {
+  if (sQiyuXRCoreHandle) {
+    return true;
+  }
+  // Standalone Unity-SDK core: keeps the known-good libsxrapi renderer and only
+  // drives the VST/camera pipeline. It dlopen's libsxrapi.qti.so / libsxrapi.so
+  // lazily for the see-through entry point.
+  sQiyuXRCoreHandle = dlopen("libQiyuXRCore.so", RTLD_NOW | RTLD_LOCAL);
+  if (!sQiyuXRCoreHandle) {
+    VRB_ERROR("QIYU: libQiyuXRCore.so unavailable: %s", dlerror());
+    return false;
+  }
+  sQvrEnableSeeThrough = reinterpret_cast<bool (*)(bool)>(
+      dlsym(sQiyuXRCoreHandle, "QVR_EnableSeeThrough"));
+  sQvrGetPassthroughCapabilities = reinterpret_cast<int (*)()>(
+      dlsym(sQiyuXRCoreHandle, "QVR_GetPassthroughCapabilities"));
+  if (!sQvrEnableSeeThrough || !sQvrGetPassthroughCapabilities) {
+    VRB_ERROR("QIYU: QVR see-through symbols missing");
+    return false;
+  }
+  VRB_LOG("QIYU: libQiyuXRCore loaded, passthrough caps=%d",
+          sQvrGetPassthroughCapabilities());
+  return true;
+}
+}
+
+extern "C" JNIEXPORT jint JNICALL
+Java_com_igalia_wolvic_VRBrowserActivity_nativeQiyuPassthroughCapabilities(
+    JNIEnv*, jclass) {
+  if (!LoadQiyuXRCore()) {
+    return 0;
+  }
+  return static_cast<jint>(sQvrGetPassthroughCapabilities());
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_igalia_wolvic_VRBrowserActivity_nativeSetQiyuSeeThrough(
+    JNIEnv*, jclass, jboolean aEnabled) {
+  if (!LoadQiyuXRCore()) {
+    return JNI_FALSE;
+  }
+  const bool enabled = aEnabled == JNI_TRUE;
+  const bool result = sQvrEnableSeeThrough(enabled);
+  VRB_LOG("QIYU: QVR_EnableSeeThrough(%d) = %d", enabled ? 1 : 0, result ? 1 : 0);
+  return result ? JNI_TRUE : JNI_FALSE;
 }
 
 jint JNI_OnLoad(JavaVM* aVm, void*) {
