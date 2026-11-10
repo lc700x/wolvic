@@ -13,7 +13,8 @@ Branch: `main` (repo `lc700x/wolvic`), tip at the time of writing: `33d26d7b`.
 |---|---|
 | Qiyu X (native SXR path) | **VR renders**: `qiyu_Init=1`, eye buffers `1920x1920`, `sxrBeginXr` OK, `qiyu_StartVR=1`, steady **71.8 fps**, no Monado, no warp starvation |
 | WebXR | Routes through Gecko `ExternalVR` (VRManager IPC), so it does **not** need OpenXR. The Qiyu flavor speaks the stock GeckoView protocol v19 (`moz_external_vr_v19.h`), so immersive sessions are advertised without a patched GeckoView build |
-| Qiyu X controller | Detected (`controller 1 connected battery=100`), pose+haptics plumbed, controller entries created with the generic trigger model, clicked via the touch-as-click fallback (`19fb6034`), beam transforms wired (`33d26d7b`); **visual beam still under test** |
+| Qiyu X controller | Detected (`controller 1 connected battery=100`), pose+haptics plumbed, controller entries created with the generic trigger model, official input mapping (`triggerForce`/`gripForce` > 0.5, `button` press bits), touch-as-click only after ~2 s without any analog/press value, beam transforms wired |
+| Passthrough (VST) | Toggle calls `SxrApi.sxrEnableSeeThrough(boolean)`; requires the newer `svrApi-release.aar` from `Qiyu_UnityXR_SDK_v1.6.1.zip` (5 MB `libsxrapi.so` + see-through libs) and `CAMERA` permission |
 | Qiyu MIX (A081) | App no longer crash-loops; firmware has **no OpenXR runtime broker** and lacks `libStereoRectifyWrapper.so`, so VR is not usable there yet |
 | Qiyu Dream/VR700 (A091) | OpenXR path works structurally (Monado `QIYIVR`), but shows runtime-side warp artifacts (see §5) |
 
@@ -60,12 +61,13 @@ Copy-Item -Force app\build\outputs\apk\qiyuArm64GeckoGeneric\release\Wolvic-qiyu
 - Release APK is currently **debug-signed** (`userProperties.useDebugSigningOnRelease=true`) — sideload/QA only.
 - `versionCode` is static (`userProperties.useStaticVersionCode=true`).
 - Qiyu SDK path comes from `local.properties` → `qiyuSdkDir=F:/wolvic/third_party/qiyu` (`Include/` + `Lib/*release*.aar`).
+- For passthrough, put the newer `svrApi-release.aar` from `Qiyu_UnityXR_SDK_v1.6.1.zip` (`Runtime/Android/`) in `Lib/` and remove/rename the old `sxrApi-v8a-release.aar`; both contain `libsxrapi.so`, so they cannot be packaged together.
 - Pure-OpenXR fallback build: add `-PqiyuControllerBridge=false` (no SDK classes/libs).
 
 ## 5. Known issues / open work
 
 1. **Qiyu X pointer aim / 6DoF pose** (highest priority). Poses must be used exactly as the official native sample does (`QiyuVR_NativeActivity/app/jni/QYModel.cpp`): raw `translate(pos) * quat(w,x,y,z)`, with `y -= trackingOffset` only in `TM_Ground` mode (`qiyu_GetTrackingOriginMode()`), and no axis remapping of any kind (the SDK space is right-handed Y-up / -Z-forward, same as Wolvic). The `(x,-y,-z)` conversion used earlier mirrored yaw/pitch ("point left, beam goes right") and moved controllers above/behind the head. `CreateController` is still required or every `ControllerDelegate` call is a no-op (no model, no beam). `debug.wolvic.qiyu.aim "pitch,yaw,roll"` remains available for a genuine grip-to-aim tilt (identity by default).
-2. **Button delivery is partial on Qiyu X.** `e05781c3` logs `button/buttonTouch/trigger/grip/stick` on change; device logs show `touch` bits changing while `button` and `triggerForce` stay 0 (only `gripForce` reaches 1.00). `19fb6034` therefore treats "touched" as "pressed" when no analog value is ever delivered. If a button is still unusable, read controller state from the `VRSDKCore`/`ash_reader` channel (`ControllerHandManager`, shmem pose/button/state zones) instead of `qiyu_GetControllerData`.
+2. **Button delivery is partial on some Qiyu X firmware.** `e05781c3` logs `button/buttonTouch/trigger/grip/stick` on change; device logs show `touch` bits changing while `button` and `triggerForce` stay 0 (only `gripForce` reaches 1.00). The official mapping is `triggerForce`/`gripForce > 0.5` plus `button` press bits; touch-as-click now engages only after ~2 s with no analog/press value and is disabled once real input appears. If a button is still unusable, read controller state from the `VRSDKCore`/`ash_reader` channel (`ControllerHandManager`, shmem pose/button/state zones) instead of `qiyu_GetControllerData`.
 3. **MIX (A081)**: no OpenXR runtime broker in firmware; OpenXR must degrade (it does now). SXR also unusable without `libStereoRectifyWrapper.so`.
 4. **Dream/VR700 OpenXR artifacts**: Monado's VR700 backend gives the app a 60×63° FOV while the panel is 82×92°, so SXR warp expands the image (`Frustum Display Width/Height Scale 1.369/1.452`) and starves (`No valid frame to warp`) — moving vertical bands / snowflake. Runtime side, not a Wolvic shader. Native SXR delegate avoids it but is only wired for Qiyu models that pass detection.
 5. **`ANativeWindow_setFrameRate not found`** on VR700 firmware: our refresh request is compositor-side only; check `compositor_request_display_refresh_rate` in logcat before blaming frame pacing.
@@ -95,6 +97,8 @@ sxr : FPS: 71.8x
 - `qiyu_Init == 0` with `qiyu_IsControllerInit() == 1` is **usable** on Qiyu X (SXR stack already up from `VRSDKCore` JNI_OnLoad). Bailing gives a black screen.
 - Follow `third_party/qiyu/Include/QiyuApi.h` ordering: `StartEye` after the eye FBO bind, `EndEye` after the eye, `StartVR` on START/RESUME/INIT_WINDOW, `EndVR` on PAUSE/TERM_WINDOW, `Update(dt)` before render.
 - A stale SXR session (no `EndVR`) presents as a black screen on the next launch.
+- Controller thresholds follow the official sample: `triggerForce > 0.5f`, `gripForce > 0.5f`; anything lower is touch-sensitive.
+- Passthrough is vendor VST (`SxrApi.sxrEnableSeeThrough`), not OpenXR, and needs the newer `svrApi-release.aar` (the old `libsxrapi.so` has no see-through symbols).
 
 ## 8. Reference material used
 

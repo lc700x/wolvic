@@ -155,6 +155,8 @@
 # so R8 cannot see the reference and would strip it in release builds.
 -keep class com.qiyi.** {*;}
 -keep class com.iqiyi.** {*;}
+# Newer Qiyu Unity/native SDK: SeeThroughHelper and the Java half of SxrApi.
+-keep class com.qiyu.** {*;}
 
 # --------------------------------------------------------------------
 # AppServices & Components

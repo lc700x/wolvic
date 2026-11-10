@@ -5,6 +5,8 @@
     <uses-feature android:name="android.hardware.vr.headtracking" android:version="1" android:required="true" />
 
     <uses-permission android:name="android.permission.VIBRATE" />
+    <!-- Qiyu VST (video see-through) uses the vendor camera pipeline via SxrApi. -->
+    <uses-permission android:name="android.permission.CAMERA" />
     <!-- The Qiyu system shows 2D panels via Presentation (OffscreenDisplay), which needs WAKE_LOCK. -->
     <uses-permission android:name="android.permission.WAKE_LOCK" tools:node="replace" />
     <uses-permission android:name="org.khronos.openxr.permission.OPENXR" />

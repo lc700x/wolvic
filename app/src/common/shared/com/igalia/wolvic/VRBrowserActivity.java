@@ -2013,7 +2013,39 @@ public class VRBrowserActivity extends PlatformActivity implements WidgetManager
     @Override
     public void togglePassthrough() {
         mIsPassthroughEnabled = !mIsPassthroughEnabled;
+        if (DeviceType.isQiyu()) {
+            setQiyuSeeThrough(mIsPassthroughEnabled);
+        }
         queueRunnable(() -> togglePassthroughNative());
+    }
+
+    /**
+     * Qiyu VST (video see-through) is driven by the vendor SXR API. Use reflection so
+     * non-Qiyu builds (and the pure-OpenXR Qiyu build without the SDK AAR) still compile.
+     */
+    private static Boolean sQiyuSeeThroughAvailable;
+
+    private static boolean isQiyuSeeThroughAvailable() {
+        if (sQiyuSeeThroughAvailable == null) {
+            try {
+                Class.forName("com.qualcomm.sxrapi.SxrApi")
+                        .getMethod("sxrEnableSeeThrough", boolean.class);
+                sQiyuSeeThroughAvailable = true;
+            } catch (Throwable t) {
+                sQiyuSeeThroughAvailable = false;
+            }
+        }
+        return sQiyuSeeThroughAvailable;
+    }
+
+    private void setQiyuSeeThrough(boolean enabled) {
+        try {
+            Class<?> sxrApi = Class.forName("com.qualcomm.sxrapi.SxrApi");
+            sxrApi.getMethod("sxrEnableSeeThrough", boolean.class).invoke(null, enabled);
+            Log.i(LOGTAG, "QIYU: see-through " + (enabled ? "enabled" : "disabled"));
+        } catch (Throwable t) {
+            Log.w(LOGTAG, "QIYU: see-through unavailable: " + t);
+        }
     }
 
     @Override
@@ -2022,7 +2054,8 @@ public class VRBrowserActivity extends PlatformActivity implements WidgetManager
     }
     @Override
     public boolean isPassthroughSupported() {
-        return DeviceType.isOculusBuild() || DeviceType.isLynx() || DeviceType.isSnapdragonSpaces() || DeviceType.isPicoXR();
+        return DeviceType.isOculusBuild() || DeviceType.isLynx() || DeviceType.isSnapdragonSpaces() || DeviceType.isPicoXR()
+                || (DeviceType.isQiyu() && isQiyuSeeThroughAvailable());
     }
     @Override
     public boolean areControllersAvailable() {

@@ -270,16 +270,29 @@ runtime/hardware, not your pose math.
 `qiyu_ButtonType`: `BT_Trigger 0x01`, `BT_Grip 0x02`, `BT_A_X 0x10`,
 `BT_B_Y 0x20`, `BT_Home_Menu 0x40`, `BT_JoyStick 0x80`.
 
-Observed on Qiyu X: `buttonTouch` changes (`0x1`, `0x10`, `0x30`, …) while
-`button` stays `0x0` and `triggerForce` stays `0.00`; `gripForce` does reach
-`1.00`. The controller service itself does have the data (its log shows
-`getButton click:… trigger:N`).
+Use the official mapping from `QiyuVR_NativeActivity.cpp` →
+`UpdateButtonState`:
 
-Practical fallback: when no analog trigger value was ever delivered, treat
-"touched" as "pressed" for trigger/grip/face buttons, and log once when the
-fallback engages. If the app truly needs press bits, read the vendor controller
-service (`VRSDKCore` / `ash_reader`, or the SXR controller API) instead of
-`qiyu_GetControllerData`.
+```cpp
+trigger = data.triggerForce > 0.5f;
+grip    = data.gripForce    > 0.5f;
+A/X     = data.button & BT_A_X;
+B/Y     = data.button & BT_B_Y;
+menu    = data.button & BT_Home_Menu;
+```
+
+`0.5f` is the official threshold. `0.2f` (or any lower value) makes the
+trigger fire as soon as the finger touches it — a real regression seen on
+Qiyu.
+
+Observed on some Qiyu X firmware: `buttonTouch` changes (`0x1`, `0x10`,
+`0x30`, …) while `button` stays `0x0` and `triggerForce` stays `0.00`;
+`gripForce` may still reach `1.00`. Keep a touch-as-click fallback, but gate
+it: only enable it after roughly two seconds of connection without ever
+seeing an analog or press value, and disable it permanently once real input
+arrives. Never latch on the first touched frame — a working controller can
+report `0` for one frame before its first analog sample, and a one-frame
+latch makes the trigger permanently touch-sensitive.
 
 ### 6.2 Aim / laser beam
 
@@ -291,6 +304,29 @@ service (`VRSDKCore` / `ash_reader`, or the SXR controller API) instead of
   applied to the beam/target ray only.
 - Roll/position of the origin: put the ray origin at the controller pose; the
   vendor Unity toolkit offsets it by ~(0, −0.045, 0.015) m only.
+
+### 6.3 Passthrough (video see-through / VST)
+
+Passthrough on Qiyu is the vendor's VST pipeline, not an OpenXR feature.
+
+- Use the newer official SDK set from `Qiyu_UnityXR_SDK_v1.6.1.zip` →
+  `Runtime/Android/svrApi-release.aar`. `SxrApi.sxrEnableSeeThrough(boolean)`
+  is **not** exported by the old native SDK's `sxrApi` AAR (2.2 MB
+  `libsxrapi.so`); the newer one (5.0 MB) has it plus
+  `sxrSetSeeThroughCallback` and the `VST_*`/`SvrStartSeeThrough` symbols.
+- The newer `libsxrapi.so` has `DT_NEEDED` entries for
+  `libseethroughsdk.so`, `libseethrough-core.so`, `libqiyuseethrough.so`,
+  `libqiyuinterface.so`, `libcameralibrary2.so`, `librelocationsdk.so`.
+  Package them together or the loader fails before your app starts.
+- Declare `android.permission.CAMERA` (the official AAR does).
+- Toggle with `SxrApi.sxrEnableSeeThrough(enabled)` and gate the UI on the
+  method existing (reflection is enough). Stop drawing the opaque
+  environment/skybox and clear the eye buffer with alpha 0; the compositor
+  blends the camera image through.
+- Symptom of using the old AAR: the toggle exists but nothing happens, and
+  `dlsym`/reflection finds no `sxrEnableSeeThrough`. FxR 12.3 bundles the
+  newer set (`libsxrapi.so` ≈ 5.04 MB + the see-through libs), which is the
+  working reference.
 
 ## 7. OpenXR path notes (when you cannot use native SXR)
 
@@ -323,6 +359,10 @@ service (`VRSDKCore` / `ash_reader`, or the SXR controller API) instead of
 10. WebXR: `navigator.xr.isSessionSupported('immersive-vr') === true` and an
     immersive session starts. If only `inline` is true, check the external-VR
     shmem protocol (§2.1) before blaming the runtime.
+11. Passthrough: the toggle reveals the real world and logcat shows the
+    see-through call. If it does nothing, verify the newer `svrApi` AAR
+    (5 MB `libsxrapi.so` with `sxrEnableSeeThrough`) and the `CAMERA`
+    permission.
 
 Useful logcat filter:
 
@@ -346,6 +386,8 @@ adb logcat -c && adb logcat | findstr /C:"QIYU:" /C:"native QIYU" /C:"sxr " ^
 | Missing `EndVR` | Black screen on the next launch |
 | Assuming analog trigger exists | Nothing is clickable |
 | Ignoring the external-VR shmem version / assuming WebXR needs OpenXR | `navigator.xr` + inline work, `immersive-vr` is unsupported, no logs |
+| Lowering the trigger threshold below 0.5 / latching touch-as-click on the first frame | Trigger clicks on mere touch |
+| Expecting passthrough from the old `sxrApi` AAR | No `sxrEnableSeeThrough` symbol; toggle does nothing |
 
 ## 10. Reference material
 
