@@ -166,6 +166,9 @@ struct ExternalVR::State {
     system.displayState.isConnected = true;
     system.displayState.isMounted = true;
     system.displayState.nativeFramebufferScaleFactor = 1.0f;
+#if defined(WOLVIC_GECKOVIEW_EXTERNAL_VR_19)
+    system.displayState.blendMode = mozilla::gfx::VRDisplayBlendMode::Opaque;
+#endif
     const vrb::Matrix identity = vrb::Matrix::Identity();
     memcpy(system.sensorState.leftViewMatrix.data(), identity.Data(), arraySize(system.sensorState.leftViewMatrix));
     memcpy(system.sensorState.rightViewMatrix.data(), identity.Data(), arraySize(system.sensorState.rightViewMatrix));
@@ -231,7 +234,13 @@ mozilla::gfx::VRControllerType GetVRControllerTypeByDevice(device::DeviceType aT
       result = mozilla::gfx::VRControllerType::OculusTouch3;
       break;
     case device::MetaQuest3:
+#if defined(WOLVIC_GECKOVIEW_EXTERNAL_VR_19)
+      // Stock GeckoView only knows the controller types included in external VR
+      // protocol v19; MetaQuest3 was added by the Wolvic Gecko patches.
+      result = mozilla::gfx::VRControllerType::OculusTouch3;
+#else
       result = mozilla::gfx::VRControllerType::MetaQuest3;
+#endif
       break;
     case device::MetaQuestPro:
       // FIXME: GeckoView does not support Quest Pro yet. Pretend to be the Quest2
@@ -258,12 +267,21 @@ mozilla::gfx::VRControllerType GetVRControllerTypeByDevice(device::DeviceType aT
       result = mozilla::gfx::VRControllerType::PicoG2;
       break;
     case device::PicoNeo3:
+#if defined(WOLVIC_GECKOVIEW_EXTERNAL_VR_19)
+      // Stock GeckoView (external VR protocol v19) only knows up to PicoNeo2.
+      result = mozilla::gfx::VRControllerType::PicoNeo2;
+#else
       result = mozilla::gfx::VRControllerType::PicoNeo3;
+#endif
       break;
     case device::Pico4x:
     case device::Pico4U:
+#if defined(WOLVIC_GECKOVIEW_EXTERNAL_VR_19)
+      result = mozilla::gfx::VRControllerType::PicoNeo2;
+#else
       // FIXME: Gecko does not support Pico4U device yet, so let's use a similar one for WebXR.
       result = mozilla::gfx::VRControllerType::Pico4;
+#endif
       break;
     case device::MagicLeap2:
       // FIXME: Gecko does not support ML2 device yet, so let's use a similar one for WebXR.
@@ -275,10 +293,19 @@ mozilla::gfx::VRControllerType GetVRControllerTypeByDevice(device::DeviceType aT
       break;
     case device::PfdmYVR1:
     case device::PfdmYVR2:
+#if defined(WOLVIC_GECKOVIEW_EXTERNAL_VR_19)
+      // YvrTouch is a Wolvic-patch-only controller type; use a generic 6DoF one.
+      result = mozilla::gfx::VRControllerType::OculusTouch3;
+#else
       result = mozilla::gfx::VRControllerType::YvrTouch;
+#endif
       break;
     case device::PfdmMR:
+#if defined(WOLVIC_GECKOVIEW_EXTERNAL_VR_19)
+      result = mozilla::gfx::VRControllerType::OculusTouch3;
+#else
       result = mozilla::gfx::VRControllerType::YvrTouch2;
+#endif
       break;
     case device::UnknownType:
     default:
@@ -376,7 +403,18 @@ ExternalVR::SetEyeTransform(const device::Eye aEye, const vrb::Matrix& aTransfor
   mozilla::gfx::VRDisplayState::Eye which = (aEye == device::Eye::Right
                                              ? mozilla::gfx::VRDisplayState::Eye_Right
                                              : mozilla::gfx::VRDisplayState::Eye_Left);
+#if defined(WOLVIC_GECKOVIEW_EXTERNAL_VR_19)
+  // Stock GeckoView (external VR protocol v19 / SHMEM_VERSION 0.0.12) only
+  // carries a per-eye translation. Wolvic's internal API passes the full eye
+  // transform, so publish its translation; the full matrix stays app-side for
+  // the view matrices we push below.
+  const vrb::Vector translation = aTransform.GetTranslation();
+  m.system.displayState.eyeTranslation[which].x = translation.x();
+  m.system.displayState.eyeTranslation[which].y = translation.y();
+  m.system.displayState.eyeTranslation[which].z = translation.z();
+#else
   memcpy(m.system.displayState.eyeTransform[which].data(), aTransform.Data(), arraySize(m.system.displayState.eyeTransform[which]));
+#endif
   m.eyeTransforms[device::EyeIndex(aEye)] = aTransform;
 }
 
@@ -404,6 +442,27 @@ ExternalVR::SetSittingToStandingTransform(const vrb::Matrix& aTransform) {
 
 void
 ExternalVR::SetBlendModes(std::vector<device::BlendMode> aBlendModes) {
+#if defined(WOLVIC_GECKOVIEW_EXTERNAL_VR_19)
+  // Protocol v19 has a single blend mode instead of the v21 list. The active
+  // headset only ever reports Opaque, so publish the first mode we understand.
+  m.system.displayState.blendMode = mozilla::gfx::VRDisplayBlendMode::Opaque;
+  for (const auto& blendMode : aBlendModes) {
+    switch (blendMode) {
+      case device::BlendMode::Opaque:
+        m.system.displayState.blendMode = mozilla::gfx::VRDisplayBlendMode::Opaque;
+        return;
+      case device::BlendMode::Additive:
+        m.system.displayState.blendMode = mozilla::gfx::VRDisplayBlendMode::Additive;
+        return;
+      case device::BlendMode::AlphaBlend:
+        m.system.displayState.blendMode = mozilla::gfx::VRDisplayBlendMode::AlphaBlend;
+        return;
+      default:
+        THROW(Fmt("Unknown blend mode", (int) blendMode));
+        return;
+    }
+  }
+#else
   std::fill(m.system.displayState.blendModes.begin(), m.system.displayState.blendModes.end(), mozilla::gfx::VRDisplayBlendMode::_empty);
   int i = 0;
   for (const auto& blendMode : aBlendModes) {
@@ -422,6 +481,7 @@ ExternalVR::SetBlendModes(std::vector<device::BlendMode> aBlendModes) {
         break;
     }
   }
+#endif
 }
 
 void
@@ -728,6 +788,11 @@ ExternalVR::StopPresenting() {
 device::BlendMode
 ExternalVR::GetImmersiveBlendMode() const {
   ASSERT(IsPresenting());
+#if defined(WOLVIC_GECKOVIEW_EXTERNAL_VR_19)
+  // Protocol v19 has no per-session blend mode request from Gecko. The Qiyu
+  // delegate only advertises and supports Opaque immersive VR.
+  return device::BlendMode::Opaque;
+#else
   switch (m.browser.blendMode) {
     case mozilla::gfx::VRDisplayBlendMode::_empty:
     case mozilla::gfx::VRDisplayBlendMode::Opaque:
@@ -737,11 +802,17 @@ ExternalVR::GetImmersiveBlendMode() const {
     case mozilla::gfx::VRDisplayBlendMode::AlphaBlend:
       return device::BlendMode::AlphaBlend;
   }
+#endif
 }
 
 DeviceDelegate::ImmersiveXRSessionType
 ExternalVR::GetImmersiveXRSessionType() const {
   ASSERT(IsPresenting());
+#if defined(WOLVIC_GECKOVIEW_EXTERNAL_VR_19)
+  // Protocol v19 has no session type field. The external VR path on this fork
+  // is used for immersive VR; AR goes through the OpenXR delegate.
+  return DeviceDelegate::ImmersiveXRSessionType::VR;
+#else
   switch (m.browser.sessionType) {
     case mozilla::gfx::ImmersiveXRSessionType::VR:
       return DeviceDelegate::ImmersiveXRSessionType::VR;
@@ -751,6 +822,7 @@ ExternalVR::GetImmersiveXRSessionType() const {
       THROW(Fmt("Unknown immersive session type %d", (int) m.browser.sessionType));
       return DeviceDelegate::ImmersiveXRSessionType::VR;
   }
+#endif
 }
 
 ExternalVR::ExternalVR(): m(State::Instance()) {

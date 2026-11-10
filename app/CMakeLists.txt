@@ -102,6 +102,8 @@ if(OPENXR)
     target_link_libraries(native-lib PRIVATE OpenXR::headers)
     include_directories(${CMAKE_SOURCE_DIR}/../app/src/openxr/cpp)
     if (QIYU)
+        # Qiyu links the prebuilt Maven GeckoView (stock external VR protocol v19).
+        add_definitions(-DWOLVIC_GECKOVIEW_EXTERNAL_VR_19=1)
         include_directories(${CMAKE_SOURCE_DIR}/../app/src/qiyu/cpp)
         if (DEFINED QIYU_SDK_DIR AND EXISTS "${QIYU_SDK_DIR}/Include")
             include_directories("${QIYU_SDK_DIR}/Include")

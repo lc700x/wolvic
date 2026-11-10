@@ -12,7 +12,7 @@ Branch: `main` (repo `lc700x/wolvic`), tip at the time of writing: `33d26d7b`.
 | Area | State |
 |---|---|
 | Qiyu X (native SXR path) | **VR renders**: `qiyu_Init=1`, eye buffers `1920x1920`, `sxrBeginXr` OK, `qiyu_StartVR=1`, steady **71.8 fps**, no Monado, no warp starvation |
-| WebXR | Routes through Gecko `ExternalVR` (VRManager IPC), so it does **not** need OpenXR |
+| WebXR | Routes through Gecko `ExternalVR` (VRManager IPC), so it does **not** need OpenXR. The Qiyu flavor speaks the stock GeckoView protocol v19 (`moz_external_vr_v19.h`), so immersive sessions are advertised without a patched GeckoView build |
 | Qiyu X controller | Detected (`controller 1 connected battery=100`), pose+haptics plumbed, controller entries created with the generic trigger model, clicked via the touch-as-click fallback (`19fb6034`), beam transforms wired (`33d26d7b`); **visual beam still under test** |
 | Qiyu MIX (A081) | App no longer crash-loops; firmware has **no OpenXR runtime broker** and lacks `libStereoRectifyWrapper.so`, so VR is not usable there yet |
 | Qiyu Dream/VR700 (A091) | OpenXR path works structurally (Monado `QIYIVR`), but shows runtime-side warp artifacts (see §5) |
@@ -22,6 +22,7 @@ Branch: `main` (repo `lc700x/wolvic`), tip at the time of writing: `33d26d7b`.
 - **OpenXR path** (`app/src/openxr/cpp/`): Monado (or vendor runtime) drives display; `khr/simple_controller` is the only profile Qiyu advertises, so `QiyuControllerBridge` supplements input via `libqiyuapi`.
 - **Native SXR path** (`app/src/qiyu/cpp/`): `DeviceDelegateQiyu` talks to `libqiyuapi.so` directly and submits to the SXR compositor (`qiyu_StartVR` / `StartEye` / `EndEye` / `SubmitFrame`). This is what the working reference client does and what makes Qiyu X smooth.
 - Selection happens in `app/src/main/cpp/native-lib.cpp`: known Qiyu model → `DeviceDelegateQiyu`, otherwise `DeviceDelegateOpenXR`.
+- **WebXR protocol:** Qiyu links the stock Maven GeckoView 153 (`kVRExternalVersion = 19`, `SHMEM_VERSION "0.0.12"`). `app/CMakeLists.txt` defines `WOLVIC_GECKOVIEW_EXTERNAL_VR_19` for the Qiyu flavor, `moz_external_vr.h` selects `moz_external_vr_v19.h`, and `ExternalVR.cpp` maps Wolvic's richer API onto that layout. Other flavors keep `moz_external_vr_v21.h` and a GeckoView built from `Igalia/wolvic-gecko-patches`. Gecko silently discards a shmem whose version/size differ, which shows up as `isSessionSupported('immersive-vr') === false` while inline WebXR still works.
 
 ## 3. Files
 

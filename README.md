@@ -89,7 +89,10 @@ The command line version of `gradlew` requires JDK 11. If you see an error that 
 Wolvic has a dedicated `qiyu` flavor that renders through the vendor's native SXR
 compositor (`qiyuapi`) instead of OpenXR. On Qiyu X this is the path that keeps
 the full panel FOV and ~72 fps; WebXR sessions work through Wolvic's `ExternalVR`
-bridge, so no OpenXR runtime is involved.
+bridge, so no OpenXR runtime is involved. This flavor links the stock Maven
+GeckoView and speaks its external-VR protocol v19 (`moz_external_vr_v19.h`), so
+`navigator.xr.isSessionSupported('immersive-vr')` is true without a patched
+GeckoView build.
 
 Build the release APK:
 
