@@ -305,29 +305,33 @@ latch makes the trigger permanently touch-sensitive.
 - Roll/position of the origin: put the ray origin at the controller pose; the
   vendor Unity toolkit offsets it by ~(0, −0.045, 0.015) m only.
 
-### 6.3 Passthrough (video see-through / VST) — blocked on the old SDK
+### 6.3 Passthrough (video see-through / VST) — FxR reference, needs renderer port
 
-Do not ship a passthrough toggle with the native `qiyuapi` renderer. Three
-approaches were tried on Qiyu X and all failed:
+FxR 12.3's `classes.dex` gives the working sequence:
 
-1. **Provider status only** — writing `status_value=1` to
-   `content://com.iqiyi.vr.provider/vst/2` sets `AppVstStatus` but leaves
-   `RgbCameraStatus=0`. Hiding the environment then gives a black background.
-2. **`QVR_EnableSeeThrough` from `libQiyuXRCore.so`** — it starts
-   `QiyuXRCore::SxrPlugin`, which needs `sxrGetSensorHeadOffset` from
-   `libsxrapi.so`. The old SDK does not export it; `SxrLoader` reports
-   `Failed to initialize QiyuPlugin` and `SxrPlugin` calls a null pointer.
-   Result: SIGSEGV on the UI thread, app exits immediately.
-3. **Replace `libsxrapi.so` with the newer 5 MB Unity-SDK build** — SXR starts
-   at ~72 fps, but the native `qiyuapi` renderer shows a black scene.
+- `com.qualcomm.sxrapi.SxrApi.sxrEnableSeeThrough(true/false)` from the
+  **newer 5 MB `libsxrapi.so`** (the old 2.2 MB lib has no such symbol).
+- Toggled from `VRBrowserActivity.OnSplashEnd`, `TrayWidget` and
+  `EnvironmentOptionsView`; disabling also broadcasts
+  `com.qiyu.browser.vst.off`.
+- Rendering is via Qiyu's `SvrView` / `SxrApi.sxrBeginXr` / `sxrBeginEye` /
+  `sxrSubmitFrame` path. FxR's `DeviceDelegateQiyuVR::BindEye` and `EndFrame`
+  are empty because `SvrView` owns submission.
 
-Passthrough therefore requires migrating the whole renderer to the newer
-`QVR_*`/Unity-SDK stack (`libQiyuXRCore` + the 5 MB `libsxrapi` and its
-see-through dependencies). Until then, keep `isPassthroughSupported()` false
-on Qiyu so the menu cannot trigger any of the broken paths.
+Why the native `qiyuapi` path cannot just call it:
 
-FxR 12.3 works because it ships that newer stack; it is not a drop-in library
-swap for a `qiyuapi` renderer.
+1. Provider status only (`content://com.iqiyi.vr.provider/vst/2`) sets
+   `AppVstStatus` but leaves `RgbCameraStatus=0`; black background.
+2. `QVR_EnableSeeThrough` from `libQiyuXRCore.so` needs
+   `sxrGetSensorHeadOffset`, missing from the old `libsxrapi.so` → null call
+   → SIGSEGV on the UI thread.
+3. Replacing `libsxrapi.so` with the newer 5 MB build starts SXR at ~72 fps
+   but the old `qiyuapi` renderer is black.
+
+So passthrough requires porting `DeviceDelegateQiyu`'s frame submission to the
+new `SxrApi`/`SvrView` path, then calling `sxrEnableSeeThrough`. It is not a
+provider or single-library change. Keep the toggle hidden until that port is
+done.
 
 ## 7. OpenXR path notes (when you cannot use native SXR)
 
