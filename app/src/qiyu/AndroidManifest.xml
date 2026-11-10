@@ -18,6 +18,9 @@
         <intent>
             <action android:name="org.khronos.openxr.OpenXRApiLayerService" />
         </intent>
+        <!-- Passthrough: the system see-through service and its VST status provider. -->
+        <package android:name="com.qiyi.seethroughservice" />
+        <provider android:authorities="com.iqiyi.vr.provider" />
     </queries>
 
     <application>

@@ -60,19 +60,24 @@ public final class QiyuSeeThrough {
     private QiyuSeeThrough() {}
 
     /**
-     * Returns whether this device looks like it can do system see-through. A
-     * failure other than "package not found" is treated as available so a
-     * package-visibility restriction never hides the toggle.
+     * Returns whether this device can do system see-through.
+     *
+     * <p>Since Android 11 a package lookup throws {@link
+     * android.content.pm.PackageManager.NameNotFoundException} both when the
+     * package is missing and when it is merely not visible to us, so a failure
+     * cannot be read as "not supported" — doing that hid the passthrough
+     * toggle. Assume the service exists; a real failure surfaces as a
+     * SecurityException when the request is issued.
      */
     public static boolean isAvailable(Context aContext) {
         try {
             aContext.getPackageManager().getPackageInfo(SERVICE_PACKAGE, 0);
-            return true;
-        } catch (android.content.pm.PackageManager.NameNotFoundException e) {
-            return false;
+            Log.i(LOGTAG, "QIYU: see-through service present");
         } catch (Throwable t) {
-            return true;
+            Log.i(LOGTAG, "QIYU: cannot verify " + SERVICE_PACKAGE + " (" + t
+                    + "), assuming it is available");
         }
+        return true;
     }
 
     /**
