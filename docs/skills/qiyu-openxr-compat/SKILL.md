@@ -305,28 +305,29 @@ latch makes the trigger permanently touch-sensitive.
 - Roll/position of the origin: put the ray origin at the controller pose; the
   vendor Unity toolkit offsets it by ~(0, −0.045, 0.015) m only.
 
-### 6.3 Passthrough (video see-through / VST)
+### 6.3 Passthrough (video see-through / VST) — blocked on the old SDK
 
-Passthrough on Qiyu is the vendor's VST pipeline, not an OpenXR feature.
+Do not ship a passthrough toggle with the native `qiyuapi` renderer. Three
+approaches were tried on Qiyu X and all failed:
 
-- The system provider `content://com.iqiyi.vr.provider/vst/2` (`status_value`
-  `1`/`0`) is only the **status flag**: writing it sets `AppVstStatus` but
-  leaves `RgbCameraStatus` at 0. The scene goes black because the camera never
-  starts.
-- Start the pipeline with `QVR_EnableSeeThrough(bool)` from
-  `libQiyuXRCore.so` (Unity SDK 1.6.1 `QiyuXRCore.aar`, with its duplicate
-  `jni/**/libashreader.so` removed), then update the provider to 1/0.
-- Gate the menu on `QVR_GetPassthroughCapabilities() > 0` **and** the provider
-  existing. Flip the app's passthrough state only when both the native call
-  and the provider update succeed; otherwise keep the opaque scene.
-- Stop drawing the opaque environment/skybox and clear the eye buffer with
-  alpha 0 so the compositor can blend the camera image through.
-- **Do not replace the old `sxrApi` AAR with the newer 5 MB
-  `svrApi-release.aar` from the same SDK.** It starts SXR at ~72 fps but the
-  native `qiyuapi` render path shows a black scene on Qiyu X. Keep the old
-  SXR renderer and load `libQiyuXRCore.so` only for VST.
-- FxR 12.3 bundles the newer SXR set and uses `sxrEnableSeeThrough`; treat it
-  as a reference for the VST sequence, not as a drop-in library swap.
+1. **Provider status only** — writing `status_value=1` to
+   `content://com.iqiyi.vr.provider/vst/2` sets `AppVstStatus` but leaves
+   `RgbCameraStatus=0`. Hiding the environment then gives a black background.
+2. **`QVR_EnableSeeThrough` from `libQiyuXRCore.so`** — it starts
+   `QiyuXRCore::SxrPlugin`, which needs `sxrGetSensorHeadOffset` from
+   `libsxrapi.so`. The old SDK does not export it; `SxrLoader` reports
+   `Failed to initialize QiyuPlugin` and `SxrPlugin` calls a null pointer.
+   Result: SIGSEGV on the UI thread, app exits immediately.
+3. **Replace `libsxrapi.so` with the newer 5 MB Unity-SDK build** — SXR starts
+   at ~72 fps, but the native `qiyuapi` renderer shows a black scene.
+
+Passthrough therefore requires migrating the whole renderer to the newer
+`QVR_*`/Unity-SDK stack (`libQiyuXRCore` + the 5 MB `libsxrapi` and its
+see-through dependencies). Until then, keep `isPassthroughSupported()` false
+on Qiyu so the menu cannot trigger any of the broken paths.
+
+FxR 12.3 works because it ships that newer stack; it is not a drop-in library
+swap for a `qiyuapi` renderer.
 
 ## 7. OpenXR path notes (when you cannot use native SXR)
 
@@ -359,11 +360,10 @@ Passthrough on Qiyu is the vendor's VST pipeline, not an OpenXR feature.
 10. WebXR: `navigator.xr.isSessionSupported('immersive-vr') === true` and an
     immersive session starts. If only `inline` is true, check the external-VR
     shmem protocol (§2.1) before blaming the runtime.
-11. Passthrough: the toggle reveals the real world and logcat shows
-    `QVR_EnableSeeThrough(1) = 1` plus
-    `see-through enabled (provider rows=1)`. If it does nothing, check the
-    capability call, the `QiyuXRCore` library, and the provider; do not swap
-    `libsxrapi.so` to "fix" it.
+11. Passthrough: on the native `qiyuapi` renderer the toggle must stay
+    hidden. Do not enable it without moving the whole renderer to the newer
+    `QVR_*` stack; all partial approaches in §6.3 either black-screen or
+    SIGSEGV.
 
 Useful logcat filter:
 
@@ -390,7 +390,8 @@ adb logcat -c && adb logcat | findstr /C:"QIYU:" /C:"native QIYU" /C:"sxr " ^
 | Lowering the trigger threshold below 0.5 / latching touch-as-click on the first frame | Trigger clicks on mere touch |
 | Replacing `libsxrapi.so` with the newer 5 MB Unity-SDK build | SXR starts at ~72 fps but the native `qiyuapi` scene is black |
 | Writing only the VST provider status and expecting passthrough | `AppVstStatus=1`, `RgbCameraStatus=0`, black background |
-| Flipping passthrough without `QVR_EnableSeeThrough` | Opaque scene hidden, black screen, no camera |
+| Calling `QVR_EnableSeeThrough` with the old `libsxrapi.so` | `sxrGetSensorHeadOffset` missing → null call → SIGSEGV on UI thread |
+| Replacing `libsxrapi.so` with the newer Unity-SDK build | SXR ~72 fps but native `qiyuapi` scene is black |
 
 ## 10. Reference material
 
