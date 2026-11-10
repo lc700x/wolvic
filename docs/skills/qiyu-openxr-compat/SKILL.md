@@ -307,16 +307,23 @@ latch makes the trigger permanently touch-sensitive.
 
 ### 6.3 Passthrough (video see-through / VST) — FxR reference, needs renderer port
 
-FxR 12.3's `classes.dex` gives the working sequence:
+Two working references use the **newer Qiyu XR stack**, not the native
+`qiyuapi` renderer:
 
-- `com.qualcomm.sxrapi.SxrApi.sxrEnableSeeThrough(true/false)` from the
-  **newer 5 MB `libsxrapi.so`** (the old 2.2 MB lib has no such symbol).
-- Toggled from `VRBrowserActivity.OnSplashEnd`, `TrayWidget` and
-  `EnvironmentOptionsView`; disabling also broadcasts
-  `com.qiyu.browser.vst.off`.
-- Rendering is via Qiyu's `SvrView` / `SxrApi.sxrBeginXr` / `sxrBeginEye` /
-  `sxrSubmitFrame` path. FxR's `DeviceDelegateQiyuVR::BindEye` and `EndFrame`
-  are empty because `SvrView` owns submission.
+- **FxR 12.3:** `com.qualcomm.sxrapi.SxrApi.sxrEnableSeeThrough(true/false)`
+  from the **newer 5 MB `libsxrapi.so`** (the old 2.2 MB lib has no such
+  symbol). Toggled from `VRBrowserActivity.OnSplashEnd`, `TrayWidget` and
+  `EnvironmentOptionsView`; disabling broadcasts
+  `com.qiyu.browser.vst.off`. Rendering is via Qiyu's `SvrView` /
+  `SxrApi.sxrBeginXr` / `sxrBeginEye` / `sxrSubmitFrame` path; FxR's
+  `DeviceDelegateQiyuVR::BindEye` and `EndFrame` are empty because `SvrView`
+  owns submission.
+- **Moon VR 2.5.12 (`com.rockvr.moonplayer`):** Unity app using
+  `libUnityQiyuVR.so` + `libQiyuXRCore.so` + `libQiyuXRPlatform.so` and the
+  same 5 MB `libsxrapi.so` + see-through libs. IL2CPP metadata contains
+  `QVR_EnableSeeThrough`, `QVR_SetSeeThroughCallback`,
+  `QVR_GetPassthroughCapabilities` and `UseVstNeckMode`. There is no
+  `libqiyuapi.so`; rendering is the Unity Qiyu display provider.
 
 Why the native `qiyuapi` path cannot just call it:
 
