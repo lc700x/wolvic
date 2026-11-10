@@ -1405,9 +1405,19 @@ public class VRBrowserActivity extends PlatformActivity implements WidgetManager
     @Keep
     @SuppressWarnings("unused")
     public void checkTogglePassthrough() {
-        if (mSettings.isStartWithPassthroughEnabled() && !mIsPassthroughEnabled) {
-            runOnUiThread(this::togglePassthrough);
+        if (!mSettings.isStartWithPassthroughEnabled() || mIsPassthroughEnabled) {
+            return;
         }
+        // Qiyu needs a round trip to the system see-through service, which can
+        // fail. Do not retry it on every frame, otherwise the fallback path
+        // would spawn a request per frame for the whole session.
+        if (DeviceType.isQiyu()) {
+            if (mQiyuSeeThroughBusy || mQiyuAutoPassthroughAttempts >= 3) {
+                return;
+            }
+            ++mQiyuAutoPassthroughAttempts;
+        }
+        runOnUiThread(this::togglePassthrough);
     }
 
     @Keep
@@ -2017,40 +2027,34 @@ public class VRBrowserActivity extends PlatformActivity implements WidgetManager
             return;
         }
         final boolean enable = !mIsPassthroughEnabled;
-        if (DeviceType.isQiyu() && !setQiyuSeeThrough(enable)) {
-            Log.w(LOGTAG, "QIYU: see-through request failed; keeping the opaque scene");
+        if (DeviceType.isQiyu()) {
+            if (mQiyuSeeThroughBusy) {
+                Log.i(LOGTAG, "QIYU: see-through request already in flight");
+                return;
+            }
+            mQiyuSeeThroughBusy = true;
+            // The service round trip waits for the camera status, so keep it
+            // off the UI thread.
+            new Thread(() -> {
+                boolean ok = QiyuSeeThrough.setEnabled(this, enable);
+                runOnUiThread(() -> {
+                    mQiyuSeeThroughBusy = false;
+                    if (!ok) {
+                        Log.w(LOGTAG, "QIYU: see-through request failed; keeping the opaque scene");
+                        return;
+                    }
+                    mIsPassthroughEnabled = enable;
+                    queueRunnable(() -> togglePassthroughNative());
+                });
+            }, "QiyuSeeThrough").start();
             return;
         }
         mIsPassthroughEnabled = enable;
         queueRunnable(() -> togglePassthroughNative());
     }
 
-    private static Boolean sQiyuSeeThroughAvailable;
-
-    private static boolean isQiyuSeeThroughAvailable() {
-        if (sQiyuSeeThroughAvailable == null) {
-            try {
-                Class.forName("com.qualcomm.sxrapi.SxrApi")
-                        .getMethod("sxrEnableSeeThrough", boolean.class);
-                sQiyuSeeThroughAvailable = true;
-            } catch (Throwable t) {
-                sQiyuSeeThroughAvailable = false;
-            }
-        }
-        return sQiyuSeeThroughAvailable;
-    }
-
-    private boolean setQiyuSeeThrough(boolean enabled) {
-        try {
-            Class<?> sxr = Class.forName("com.qualcomm.sxrapi.SxrApi");
-            sxr.getMethod("sxrEnableSeeThrough", boolean.class).invoke(null, enabled);
-            Log.i(LOGTAG, "QIYU: sxrEnableSeeThrough(" + enabled + ")");
-            return true;
-        } catch (Throwable t) {
-            Log.w(LOGTAG, "QIYU: sxrEnableSeeThrough unavailable: " + t);
-            return false;
-        }
-    }
+    private volatile boolean mQiyuSeeThroughBusy;
+    private int mQiyuAutoPassthroughAttempts;
 
     @Override
     public boolean isPassthroughEnabled() {
@@ -2059,7 +2063,7 @@ public class VRBrowserActivity extends PlatformActivity implements WidgetManager
     @Override
     public boolean isPassthroughSupported() {
         return DeviceType.isOculusBuild() || DeviceType.isLynx() || DeviceType.isSnapdragonSpaces() || DeviceType.isPicoXR()
-                || (DeviceType.isQiyu() && isQiyuSeeThroughAvailable());
+                || (DeviceType.isQiyu() && QiyuSeeThrough.isAvailable(this));
     }
     @Override
     public boolean areControllersAvailable() {

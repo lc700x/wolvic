@@ -305,40 +305,49 @@ latch makes the trigger permanently touch-sensitive.
 - Roll/position of the origin: put the ray origin at the controller pose; the
   vendor Unity toolkit offsets it by ~(0, −0.045, 0.015) m only.
 
-### 6.3 Passthrough (video see-through / VST) — FxR reference, needs renderer port
+### 6.3 Passthrough (video see-through / VST) — system service, not a renderer feature
 
-Two working references use the **newer Qiyu XR stack**, not the native
-`qiyuapi` renderer:
+The Qiyu system owns VST; the rendering app only controls it. Verified from a
+Qiyu X device log:
 
-- **FxR 12.3:** `com.qualcomm.sxrapi.SxrApi.sxrEnableSeeThrough(true/false)`
-  from the **newer 5 MB `libsxrapi.so`** (the old 2.2 MB lib has no such
-  symbol). Toggled from `VRBrowserActivity.OnSplashEnd`, `TrayWidget` and
-  `EnvironmentOptionsView`; disabling broadcasts
-  `com.qiyu.browser.vst.off`. Rendering is via Qiyu's `SvrView` /
-  `SxrApi.sxrBeginXr` / `sxrBeginEye` / `sxrSubmitFrame` path; FxR's
-  `DeviceDelegateQiyuVR::BindEye` and `EndFrame` are empty because `SvrView`
-  owns submission.
-- **Moon VR 2.5.12 (`com.rockvr.moonplayer`):** Unity app using
-  `libUnityQiyuVR.so` + `libQiyuXRCore.so` + `libQiyuXRPlatform.so` and the
-  same 5 MB `libsxrapi.so` + see-through libs. IL2CPP metadata contains
-  `QVR_EnableSeeThrough`, `QVR_SetSeeThroughCallback`,
-  `QVR_GetPassthroughCapabilities` and `UseVstNeckMode`. There is no
-  `libqiyuapi.so`; rendering is the Unity Qiyu display provider.
+- `com.qiyi.seethroughservice/.SeethroughService` is commanded with an
+  explicit start whose `mode` extra selects the operation:
+  `3` = (re)apply the passthrough layer model, `1` = start the RGB cameras,
+  `2` = stop. Log: `SeethroughService: onStartCommand mode = 1` →
+  `VstManager: startSeethrough: started ref count = 1` →
+  `VstManager: startCamera: started` →
+  `seethrough_xr: startSeeThrough wait_for:0` → `NotifyVstStarted`.
+- The Qiyu OpenXR host (`QiyuOXRCore`, with Monado embedded as
+  `monado-ipc-client`) logs `yyj PassthroughStart` / `yyj PassthroughStop`
+  right before issuing that start command.
+- `content://com.iqiyi.vr.provider/vst/1` is `RgbCameraStatus` and
+  `.../vst/2` is `AppVstStatus`. **Both are status reports, not commands.**
+  Writing `AppVstStatus=1` starts nothing.
+- App side: the compositor blends the cameras behind the eye buffer, so the
+  app must clear with alpha 0 and stop drawing its opaque root/skybox.
+  Wolvic already does this via `DeviceDelegate::IsPassthroughEnabled()`
+  (`BrowserWorld::UpdateEnvironment()` returns early, the opaque root is
+  skipped in `BrowserWorld::DrawEye`). The official Unity sample confirms the
+  contract: `QiyuSeeThrough` sets `clearFlags = SolidColor` and
+  `backgroundColor = (0,0,0,0)` on `AppOpen`.
+- `QiyuSeeThrough.java` implements the service call, with a
+  `RgbCameraStatus` wait so a failed request never leaves the scene
+  transparent (black).
 
-Why the native `qiyuapi` path cannot just call it:
+The vendor APIs remain, but both need the newer 5 MB `libsxrapi.so` and a
+renderer that is not `qiyuapi`:
 
-1. Provider status only (`content://com.iqiyi.vr.provider/vst/2`) sets
-   `AppVstStatus` but leaves `RgbCameraStatus=0`; black background.
-2. `QVR_EnableSeeThrough` from `libQiyuXRCore.so` needs
-   `sxrGetSensorHeadOffset`, missing from the old `libsxrapi.so` → null call
-   → SIGSEGV on the UI thread.
-3. Replacing `libsxrapi.so` with the newer 5 MB build starts SXR at ~72 fps
-   but the old `qiyuapi` renderer is black.
+- **FxR 12.3:** `SxrApi.sxrEnableSeeThrough(true/false)`; rendering via
+  `SvrView` / `sxrBeginXr` / `sxrBeginEye` / `sxrSubmitFrame`.
+- **Moon VR 2.5.12 (`com.rockvr.moonplayer`):** Unity Qiyu display provider
+  with `QVR_EnableSeeThrough` / `QVR_SetSeeThroughCallback` /
+  `QVR_GetPassthroughCapabilities` / `UseVstNeckMode`.
+  `libQiyuXRCore.so` DT_NEEDEDs both `libsxrapi.so` and `libsxrapi.qti.so`,
+  so it cannot be loaded next to the old 2.2 MB `libsxrapi.so`.
 
-So passthrough requires porting `DeviceDelegateQiyu`'s frame submission to the
-new `SxrApi`/`SvrView` path, then calling `sxrEnableSeeThrough`. It is not a
-provider or single-library change. Keep the toggle hidden until that port is
-done.
+If the service refuses a third-party caller, the fallback is porting
+`DeviceDelegateQiyu` frame submission to the new `SxrApi`/`SvrView` path and
+then calling `sxrEnableSeeThrough`.
 
 ## 7. OpenXR path notes (when you cannot use native SXR)
 

@@ -741,13 +741,16 @@ DeviceDelegateQiyu::EnterVR(const BrowserEGLContext& aEGLContext) {
     VRB_ERROR("QIYU: cannot enter VR, qiyu_Init failed");
     return;
   }
-  // FxR's SvrView creates its eye textures *after* sxrBeginXr. With the
-  // newer SXR libraries, creating them before the session exists leaves the
-  // compositor sampling a black texture. Only reserve the size here; create
-  // the buffers once qiyu_StartVR has started the SXR session.
+  // Create the eye buffers before the SXR session, exactly as the known-good
+  // 1.11.3 build did. The FxR-style "create after sxrBeginXr" order is only
+  // required by the newer 5 MB libsxrapi, which cannot render through qiyuapi.
   if (m.eyeWidth == 0 || m.eyeHeight == 0) {
-    m.eyeWidth = static_cast<uint32_t>(std::max(m.deviceInfo.iEyeTargetWidth, 1));
-    m.eyeHeight = static_cast<uint32_t>(std::max(m.deviceInfo.iEyeTargetHeight, 1));
+    const uint32_t w = static_cast<uint32_t>(std::max(m.deviceInfo.iEyeTargetWidth, 1));
+    const uint32_t h = static_cast<uint32_t>(std::max(m.deviceInfo.iEyeTargetHeight, 1));
+    if (!m.CreateEyeBuffers(w, h)) {
+      VRB_ERROR("QIYU: cannot create eye buffers");
+      return;
+    }
   }
   VRB_LOG("QIYU: eye target %ux%u", m.eyeWidth, m.eyeHeight);
   if (!m.window) {
@@ -787,10 +790,6 @@ DeviceDelegateQiyu::EnterVR(const BrowserEGLContext& aEGLContext) {
   }
   if (m.api.setFoveation) {
     m.api.setFoveation(qiyu::FL_Low, nullptr);
-  }
-  if (!m.CreateEyeBuffers(m.eyeWidth, m.eyeHeight)) {
-    VRB_ERROR("QIYU: cannot create eye buffers");
-    return;
   }
   if (m.api.postSetEyeBufferSize) {
     m.api.postSetEyeBufferSize(static_cast<int>(m.eyeWidth), static_cast<int>(m.eyeHeight));
@@ -859,7 +858,9 @@ DeviceDelegateQiyu::BindEye(const device::Eye aWhich) {
     }
   }
   VRB_GL_CHECK(glViewport(0, 0, static_cast<GLsizei>(m.eyeWidth), static_cast<GLsizei>(m.eyeHeight)));
-  // The newer SXR compositor honours the eye-buffer alpha (VST-aware).
+  // Passthrough contract: when system see-through is running, the compositor
+  // blends the cameras behind this eye buffer, so empty pixels must be fully
+  // transparent. Opaque everywhere else.
   const float clearAlpha = IsPassthroughEnabled() ? 0.0f : 1.0f;
   VRB_GL_CHECK(glClearColor(m.clearColor.Red(), m.clearColor.Green(),
                             m.clearColor.Blue(), clearAlpha));
