@@ -8,12 +8,14 @@ package com.igalia.wolvic;
 import static com.igalia.wolvic.ui.widgets.UIWidget.REMOVE_WIDGET;
 
 import android.app.ActivityManager;
+import android.Manifest;
 import android.content.BroadcastReceiver;
 import android.content.ComponentCallbacks2;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.SharedPreferences;
+import android.content.pm.PackageManager;
 import android.content.res.Configuration;
 import android.graphics.Canvas;
 import android.graphics.Color;
@@ -2032,6 +2034,14 @@ public class VRBrowserActivity extends PlatformActivity implements WidgetManager
                 Log.i(LOGTAG, "QIYU: see-through request already in flight");
                 return;
             }
+            // The vendor camera SDK needs CAMERA. Ask once; the attempt below still runs
+            // so a refusal shows up in logcat instead of being swallowed.
+            if (enable && checkSelfPermission(Manifest.permission.CAMERA)
+                    != PackageManager.PERMISSION_GRANTED) {
+                requestPermissions(new String[] {Manifest.permission.CAMERA},
+                        REQUEST_CAMERA_PERMISSION);
+                Log.i(LOGTAG, "QIYU: requesting the CAMERA permission for see-through");
+            }
             mQiyuSeeThroughBusy = true;
             // The service round trip waits for the camera status, so keep it
             // off the UI thread.
@@ -2040,9 +2050,11 @@ public class VRBrowserActivity extends PlatformActivity implements WidgetManager
                 runOnUiThread(() -> {
                     mQiyuSeeThroughBusy = false;
                     if (!ok) {
-                        Log.w(LOGTAG, "QIYU: see-through request failed; keeping the opaque scene");
-                        return;
+                        Log.i(LOGTAG, "QIYU: the system see-through service did not start;"
+                                + " using the in-app vendor VST bridge instead");
                     }
+                    // Always forward the toggle: the native delegate owns the vendor VST
+                    // bridge and only shows the real world once it has a camera frame.
                     mIsPassthroughEnabled = enable;
                     queueRunnable(() -> togglePassthroughNative());
                 });
@@ -2054,6 +2066,7 @@ public class VRBrowserActivity extends PlatformActivity implements WidgetManager
     }
 
     private volatile boolean mQiyuSeeThroughBusy;
+    private static final int REQUEST_CAMERA_PERMISSION = 0x5153;
     private int mQiyuAutoPassthroughAttempts;
 
     @Override

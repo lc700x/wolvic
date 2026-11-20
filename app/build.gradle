@@ -125,8 +125,48 @@ def qiyuControllerBridge = qiyuBridgeProperty == null ||
         qiyuBridgeProperty.toString().isEmpty() ||
         qiyuBridgeProperty.toString().toBoolean()
 
+// Qiyu see-through bridge. The vendor camera SDK ships inside the official
+// svrApi-release.aar, which also carries the 5 MB libsxrapi.so that must never shadow the
+// 2.2 MB renderer we submit frames with (SONAME collision -> black screen). Only the two
+// renderer-independent libraries are shipped: they have no libsxrapi.so in their
+// DT_NEEDED, so they load beside the active renderer.
+def qiyuVstJniDir = layout.buildDirectory.dir("qiyuVstJni").get().asFile
+def qiyuVstAbiDir = new File(qiyuVstJniDir, "arm64-v8a")
+def extractQiyuVstLibs = {
+    def aarFile = file("${getQiyuSdkDir()}/Lib/svrApi-release.aar.disabled")
+    if (!aarFile.exists()) {
+        aarFile = file("${getQiyuSdkDir()}/Lib/svrApi-release.aar")
+    }
+    if (!aarFile.exists()) {
+        logger.lifecycle("Qiyu VST: ${aarFile} not found; the in-app passthrough bridge will be unavailable")
+        return
+    }
+    def libs = ['libcameralibrary2.so', 'libseethroughsdk.so']
+    qiyuVstAbiDir.mkdirs()
+    def zip = new java.util.zip.ZipFile(aarFile)
+    try {
+        libs.each { name ->
+            def entry = zip.getEntry("jni/arm64-v8a/${name}")
+            if (entry == null) {
+                logger.lifecycle("Qiyu VST: ${name} missing from ${aarFile.name}")
+                return
+            }
+            def target = new File(qiyuVstAbiDir, name)
+            if (target.exists() && target.length() == entry.size) {
+                return
+            }
+            zip.getInputStream(entry).withStream { input ->
+                target.withOutputStream { output -> output << input }
+            }
+        }
+    } finally {
+        zip.close()
+    }
+}
+extractQiyuVstLibs()
+
 // Version names for Gecko and Chromium releases.
-def GECKO_VERSION_NAME = '1.11.11'
+def GECKO_VERSION_NAME = '1.11.12'
 def CHROMIUM_VERSION_NAME = '1.5'
 
 android {
@@ -562,6 +602,8 @@ android {
 
         qiyu {
             manifest.srcFile "src/qiyu/AndroidManifest.xml"
+            // Vendor see-through camera SDK, extracted from svrApi-release.aar above.
+            jniLibs.srcDir(qiyuVstJniDir)
         }
 
         noapi {

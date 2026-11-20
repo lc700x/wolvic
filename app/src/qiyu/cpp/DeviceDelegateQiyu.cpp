@@ -4,6 +4,7 @@
 #include "BrowserWorld.h"
 #include "DeviceUtils.h"
 #include "JNIUtil.h"
+#include "QiyuVst.h"
 #include "VRBrowser.h"
 #include "vrb/CameraEye.h"
 #include "vrb/Color.h"
@@ -119,6 +120,10 @@ struct DeviceDelegateQiyu::State {
   int trackingMode { qiyu::TM_Device };
   int lastConnected[2] { -1, -1 };
   int lastBattery[2] { -1, -1 };
+
+  // Vendor see-through bridge (QiyuVst.h). Started lazily on the GL thread the first
+  // time passthrough is enabled, stopped from TogglePassthroughEnabled().
+  bool vstFrame { false };
 
   // Ground mode only: the SDK reports ground-relative poses and the official sample
   // subtracts the tracking offset from the controller Y to bring it into the head-local
@@ -559,6 +564,7 @@ struct DeviceDelegateQiyu::State {
   }
 
   void Shutdown() {
+    qiyu::vst::Stop();
     DestroyEyeBuffers();
     if (vrReady && api.endVR) {
       api.endVR();
@@ -835,6 +841,29 @@ DeviceDelegateQiyu::StartFrame(const FramePrediction aPrediction) {
   mShouldRender = true;
 }
 
+// Passthrough is only reported as active when the real world can actually be shown:
+// either the vendor bridge produced a camera frame, or the bridge is not in use at all
+// and the system see-through service owns the cameras (the alpha-0 clear path). While the
+// bridge is still warming up - and if it never delivers - the scene stays opaque, which is
+// what the previous builds did when the service refused to start.
+bool
+DeviceDelegateQiyu::IsPassthroughEnabled() const {
+  if (!DeviceDelegate::IsPassthroughEnabled()) {
+    return false;
+  }
+  return m.vstFrame || !qiyu::vst::Available();
+}
+
+void
+DeviceDelegateQiyu::TogglePassthroughEnabled() {
+  DeviceDelegate::TogglePassthroughEnabled();
+  if (!IsPassthroughEnabled()) {
+    // Release the vendor camera client and its GL objects on the render thread.
+    qiyu::vst::Stop();
+    m.vstFrame = false;
+  }
+}
+
 void
 DeviceDelegateQiyu::BindEye(const device::Eye aWhich) {
   const int32_t index = device::EyeIndex(aWhich);
@@ -850,6 +879,14 @@ DeviceDelegateQiyu::BindEye(const device::Eye aWhich) {
     m.startEyesActive = false;
   }
   m.boundEye = index;
+  // Pull a camera frame before binding the eye FBO: the vendor drawSeethrough() binds
+  // its own framebuffer and leaves framebuffer 0 bound. Both eyes share one pull.
+  if (index == 0) {
+    // Use the base flag, not IsPassthroughEnabled(): the latter reports "visible", which
+    // only becomes true once this bridge has produced a frame.
+    m.vstFrame = DeviceDelegate::IsPassthroughEnabled()
+        && qiyu::vst::Start(m.eyeWidth, m.eyeHeight) && qiyu::vst::Update();
+  }
   m.eyeFBO[index]->Bind();
   if (!m.startEyesActive) {
     if (m.api.startEye) {
@@ -865,6 +902,11 @@ DeviceDelegateQiyu::BindEye(const device::Eye aWhich) {
   VRB_GL_CHECK(glClearColor(m.clearColor.Red(), m.clearColor.Green(),
                             m.clearColor.Blue(), clearAlpha));
   VRB_GL_CHECK(glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT));
+  // App-rendered see-through: the vendor camera frame replaces the clear. When it is not
+  // available the alpha-0 clear above stays, which is what the system service path needs.
+  if (m.vstFrame) {
+    qiyu::vst::Draw(index);
+  }
 }
 
 void

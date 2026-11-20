@@ -40,6 +40,8 @@ public:
   void SetClipPlanes(const float aNear, const float aFar) override;
   void SetControllerDelegate(ControllerDelegatePtr& aController) override;
   void ReleaseControllerDelegate() override;
+  bool IsPassthroughEnabled() const override;
+  void TogglePassthroughEnabled() override;
   int32_t GetControllerModelCount() const override;
   const std::string GetControllerModelName(const int32_t aModelIndex) const override;
   bool IsPositionTrackingSupported() const override;

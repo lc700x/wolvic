@@ -144,6 +144,7 @@ if(OPENXR)
                 native-lib
                 PUBLIC
                 ${CMAKE_SOURCE_DIR}/src/qiyu/cpp/QiyuControllerBridge.cpp
+                ${CMAKE_SOURCE_DIR}/src/qiyu/cpp/QiyuVst.cpp
                 ${CMAKE_SOURCE_DIR}/src/qiyu/cpp/DeviceDelegateQiyu.cpp
         )
     endif()
