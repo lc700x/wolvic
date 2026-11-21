@@ -56,31 +56,33 @@ public final class QiyuSeeThrough {
     static final String SERVICE_CLASS = "com.qiyi.seethroughservice.SeethroughService";
 
     /**
-     * The service is addressed through this intent-filter action. {@code dumpsys package
-     * com.qiyi.seethroughservice} declares it as
+     * The service is addressed through this intent-filter action, and the same string is
+     * also the key of the {@code mode} extra. Decompiled from the device's
+     * {@code SeethroughService.onStartCommand}:
      *
      * <pre>
-     * Service Resolver Table / Non-Data Actions: org.freedesktop.monado.vst
-     *   com.qiyi.seethroughservice/.SeethroughService  Action: "org.freedesktop.monado.vst"
+     * mode = intent.getIntExtra("org.freedesktop.monado.vst", 0);
+     * switch (mode) {
+     *   case 1: isAppVST = true;  VstManager.startSeethrough(); break;   // mode 1 = start
+     *   case 2: isAppVST = false; VstManager.stopSeethrough();  break;   // mode 2 = stop
+     *   case 3: vstModel = intent.getSerializableExtra(
+     *               "org.freedesktop.monado.vst.model"); setVstModel(...); break;
+     * }
      * </pre>
      *
-     * An intent that names the component directly carries {@code action = null}, and the
-     * service treats that as "no command": it logs {@code onStartCommand mode = 0} whatever
-     * extras it gets. That is why every 1.11.11-1.11.14 toggle was ignored while the real
-     * caller (which uses the action) reached {@code mode = 3} / {@code mode = 1}.
+     * 1.11.11-1.11.15 sent the mode under the key {@code "mode"}, which the service never
+     * reads, so every command arrived as {@code mode = 0} and was ignored. The bind-only
+     * interface ({@code ISeethroughInterface.stratSeethrough()}, transaction 2) drives the
+     * same path, but the startService contract is enough.
      */
     private static final String ACTION_VST = "org.freedesktop.monado.vst";
 
     /** Intent shapes tried in order until {@code RgbCameraStatus} reports the cameras. */
     private static final int VARIANT_ACTION = 0;
-    private static final int VARIANT_ACTION_STRING = 1;
-    private static final int VARIANT_COMPONENT = 2;
+    private static final int VARIANT_COMPONENT = 1;
 
-    /**
-     * The service reads the command from a {@code mode} extra (3 = apply the passthrough
-     * layer model, 1 = start the cameras, 2 = stop).
-     */
-    private static final String EXTRA_MODE = "mode";
+    /** Extra key read by {@code SeethroughService.onStartCommand} (same string as the action). */
+    private static final String EXTRA_MODE = ACTION_VST;
 
     private static final int MODE_START = 1;
     private static final int MODE_STOP = 2;
@@ -272,17 +274,14 @@ public final class QiyuSeeThrough {
         try {
             Intent intent = new Intent();
             if (aVariant == VARIANT_ACTION) {
+                // Same shape as: am startservice -a org.freedesktop.monado.vst \
+                //     --ei org.freedesktop.monado.vst <mode>
                 intent.setAction(ACTION_VST);
                 intent.setPackage(SERVICE_PACKAGE);
-                intent.putExtra(EXTRA_MODE, aMode);
-            } else if (aVariant == VARIANT_ACTION_STRING) {
-                intent.setAction(ACTION_VST);
-                intent.setPackage(SERVICE_PACKAGE);
-                intent.putExtra(EXTRA_MODE, String.valueOf(aMode));
             } else {
                 intent.setComponent(new ComponentName(SERVICE_PACKAGE, SERVICE_CLASS));
-                intent.putExtra(EXTRA_MODE, aMode);
             }
+            intent.putExtra(EXTRA_MODE, aMode);
             ComponentName started = aContext.startService(intent);
             // Warning level on purpose: chatty rate-limits this app's info lines away.
             Log.w(VSTTAG, "seethroughservice mode=" + aMode + " variant=" + aVariant
