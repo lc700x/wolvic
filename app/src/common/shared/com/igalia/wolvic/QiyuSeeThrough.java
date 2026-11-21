@@ -56,10 +56,11 @@ public final class QiyuSeeThrough {
     static final String SERVICE_CLASS = "com.qiyi.seethroughservice.SeethroughService";
 
     /**
-     * The service reads the command from a {@code mode} extra. The aliases are
-     * harmless and make the request robust to a renamed key.
+     * The service reads the command from the {@code mode} extra. This is the key the on-device
+     * {@code am startservice --ei mode N} test used; the list below is only a fallback.
      */
-    private static final String[] EXTRA_MODE_KEYS = {"mode", "cmd", "command", "vst_mode"};
+    private static final String EXTRA_MODE = "mode";
+    private static final String[] EXTRA_MODE_ALIASES = {"mode", "cmd", "command", "vst_mode"};
 
     private static final int MODE_START = 1;
     private static final int MODE_STOP = 2;
@@ -143,11 +144,22 @@ public final class QiyuSeeThrough {
             return stopped;
         }
 
-        // 1. Direct service command.
+        // 1. Direct service command, exactly as `am startservice --ei mode 1` builds it.
         sendMode(aContext, MODE_APPLY_MODEL);
         boolean serviceAccepted = sendMode(aContext, MODE_START);
         int rgb = waitForCamera(aContext, 1800);
         Log.i(VSTTAG, "VST attempt 1 (service start, accepted=" + serviceAccepted + ") "
+                + statusSummary(aContext));
+        if (rgb > 0) {
+            logSuccess(aContext, rgb);
+            return true;
+        }
+
+        // 1b. Same command plus the vendor alias keys, for a firmware that reads another one.
+        sendMode(aContext, MODE_APPLY_MODEL, true);
+        sendMode(aContext, MODE_START, true);
+        rgb = waitForCamera(aContext, 1200);
+        Log.i(VSTTAG, "VST attempt 1b (service start, alias extras) "
                 + statusSummary(aContext));
         if (rgb > 0) {
             logSuccess(aContext, rgb);
@@ -231,14 +243,34 @@ public final class QiyuSeeThrough {
     }
 
     private static boolean sendMode(Context aContext, int aMode) {
+        return sendMode(aContext, aMode, false);
+    }
+
+    /**
+     * Starts the see-through service with the {@code mode} command.
+     *
+     * <p>The plain form is byte-for-byte what {@code am startservice -n <pkg>/<cls> --ei mode N}
+     * builds, which is the only shape verified to reach the service on device: a 1.11.13
+     * build that also added the alias keys below always arrived as {@code mode = 0}, while the
+     * adb command produced {@code mode = 3} / {@code mode = 1} and then
+     * {@code VstManager: startCamera: started} with {@code RgbCameraStatus = 1}. The aliases
+     * are kept as a second attempt only.
+     */
+    private static boolean sendMode(Context aContext, int aMode, boolean aAliases) {
         try {
             Intent intent = new Intent();
             intent.setComponent(new ComponentName(SERVICE_PACKAGE, SERVICE_CLASS));
-            for (String key : EXTRA_MODE_KEYS) {
-                intent.putExtra(key, aMode);
+            intent.putExtra(EXTRA_MODE, aMode);
+            if (aAliases) {
+                for (String key : EXTRA_MODE_ALIASES) {
+                    if (!EXTRA_MODE.equals(key)) {
+                        intent.putExtra(key, aMode);
+                    }
+                }
             }
             ComponentName started = aContext.startService(intent);
-            Log.i(VSTTAG, "seethroughservice mode=" + aMode + " -> " + started);
+            Log.i(VSTTAG, "seethroughservice mode=" + aMode + (aAliases ? " (aliases)" : "")
+                    + " -> " + started);
             return started != null;
         } catch (Throwable t) {
             Log.w(VSTTAG, "seethroughservice mode=" + aMode + " failed: " + t);

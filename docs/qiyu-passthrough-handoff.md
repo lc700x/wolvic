@@ -580,3 +580,58 @@ supports `XR_QIYU_passthrough`, see `docs/qiyu-thru3d-passthrough-rea.md`) so th
 2023 `libsxrapi.so` can be shipped. That is a renderer change, not a passthrough
 patch, and it must be validated on device before it replaces the current build.
 
+## 14. 1.11.14: the service does work, and the intent was the difference
+
+Two device experiments settled this.
+
+### 14.1 A manual `am startservice` starts passthrough
+
+```
+SeethroughService: onStartCommand mode = 3
+SeethroughService: vstModel:Passthroughlayermodel{edge_color=[0,0,0,0], ..., w_h_c_g=[1800,1800,0,1]}
+SeethroughService: onStartCommand mode = 1
+VstManager: startSeethrough: starting ver:202303211315
+VstManager: startCamera: starting -> started
+seethrough_xr: startSeeThrough ver:202303211315
+seethrough_xr: startSeeThrough wait_for:0
+VstManager: startSeethrough: started ref count = 1
+VstManager: onChange ... DATA_RGB = 1 DATA_APP = 1 DATA_SYS = 2
+```
+
+`mode = 2` stops it (`stopSeethrough: stopped ref count = 0`, and the camera is
+released 5 s later by `stopCameraDelayed: 5.0`). The service is a normal exported
+`startService` target: it runs `initSeeThrough` in standalone mode, creates its
+own 1440x1440 Monado session, calls `startSeethroughCamera` and renders the
+passthrough layer itself. The app only has to clear its eye buffer with alpha 0.
+
+So the service route never needed the renderer to change. What failed in 1.11.13
+was the intent: our two calls (same `mode 3` then `mode 1`, 7 ms apart, same order
+as the working run) arrived as `mode = 0`. The only difference was the alias
+extras `cmd` / `command` / `vst_mode` that 1.11.11-1.11.13 added "for safety".
+
+1.11.14 sends a single `mode` int extra - the exact intent `am startservice -n
+<pkg>/<cls> --ei mode N` builds - and only falls back to the aliases if that does
+not start the cameras.
+
+### 14.2 Thru3D does not use the service at all
+
+Its instrumentation log has no `SeethroughService` lines. It is an OpenXR client
+(`Vr700ClassLoader: qiyu bootstrap entered`) and drives the runtime extension:
+
+```
+{"names":"... XR_QIYU_passthrough","qiyu_passthrough_enabled":true}
+{"enabled":true,"layer":true,"result":0},"event":"qiyu_passthrough"
+"actual_blend_mode":2, "viewport_transparent_bg":true,
+"render_target_size":[1800,1800], "render_scale":1.25
+```
+
+The runtime opens the cameras while a `XrCompositionLayerPassthroughFB` is in the
+frame, which requires an OpenXR session and is unavailable to the native SXR
+delegate. It also costs frame rate: 48-53 fps with passthrough at 72 Hz, versus the
+service route which renders the layer out of process and leaves the app's frame
+budget alone.
+
+That makes `mode 1` the only route that fits this renderer, and 1.11.14 is the
+build that should finally reach it.
+
+
