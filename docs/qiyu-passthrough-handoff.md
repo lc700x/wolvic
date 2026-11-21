@@ -634,4 +634,53 @@ budget alone.
 That makes `mode 1` the only route that fits this renderer, and 1.11.14 is the
 build that should finally reach it.
 
+## 15. 1.11.15: the service is addressed by action, not by component
+
+1.11.14 still produced `mode = 0` with a single `mode` extra, which ruled out the
+extras. `adb shell dumpsys package com.qiyi.seethroughservice` gave the answer:
+
+```
+Service Resolver Table:
+  Non-Data Actions:
+      org.freedesktop.monado.vst:
+        com.qiyi.seethroughservice/.SeethroughService
+          Action: "org.freedesktop.monado.vst"
+```
+
+The service is declared with an intent-filter action and is meant to be resolved
+implicitly. An intent built with `setComponent(...)` and no action carries
+`action = null`, and the service treats that as "no command" - it logs
+`onStartCommand mode = 0` whatever extras it gets. That is why 1.11.11 through
+1.11.14 were all ignored while the real caller (the Monado VST client, which uses
+the action) reached `mode = 3` / `mode = 1`.
+
+A second confirmation from the device: `am startservice -n <pkg>/<cls> --ei mode 1`
+(explicit component, from shell, no action) also left `RgbCameraStatus` at 0.
+Inside an app and from `am` the component form fails identically, so this was never
+a caller-permission problem.
+
+1.11.15 sends `Intent(org.freedesktop.monado.vst).setPackage(...)` with the
+`mode` int, and keeps the component form as a last resort for other firmware:
+
+| Variant | Intent |
+| --- | --- |
+| `VARIANT_ACTION` (first) | action `org.freedesktop.monado.vst` + `setPackage`, `mode` as int |
+| `VARIANT_ACTION_STRING` | same, `mode` as String |
+| `VARIANT_COMPONENT` (last) | explicit component, `mode` as int |
+
+Verify from a shell with the implicit form:
+
+```
+adb shell am startservice -a org.freedesktop.monado.vst --ei mode 1
+adb shell content query --uri content://com.iqiyi.vr.provider/vst/1
+```
+
+`status_value=1` plus `VstManager: startCamera: started` in logcat means the
+contract is confirmed. Stop with `--ei mode 2`.
+
+Note on logcat: the `QIYUVST` lines are emitted at warning level because chatty's
+per-uid quota drops this app's info lines (`uid=... expire N lines`), which is why
+1.11.12's `QIYU VST:` lines never showed up at all.
+
+
 
