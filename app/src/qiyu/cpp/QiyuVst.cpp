@@ -57,13 +57,9 @@ bool sValidated { false };
 bool sValid { false };
 int sStartAttempts { 0 };
 
-// The vendor SDK takes an optional frame callback. We never need the raw buffers
-// (frames land in the GL textures through drawSeethrough), but a real function
-// pointer is safer than passing null into a camera thread.
-int sCallbackCount { 0 };
-void OnCameraFrame() {
-  ++sCallbackCount;
-}
+// The vendor SDK takes an optional frame callback. We never need the raw buffers (frames
+// land in the GL textures through drawSeethrough), and the callback slot is not the camera
+// client argument startCameraRGB() dereferences, so nothing is registered.
 
 const char* kVertexShader =
     "#version 300 es\n"
@@ -200,8 +196,7 @@ void ValidateFrames() {
   }
   sValid = nonZero > 0;
   if (sValid) {
-    VRB_LOG("QIYU VST: camera frames confirmed (%d frames, %d callbacks)",
-            sFramesSeen, sCallbackCount);
+    VRB_LOG("QIYU VST: camera frames confirmed (%d frames)", sFramesSeen);
   } else {
     // Roll back so the eye buffer keeps the alpha-0 clear and the system path (if the
     // service ladder started it) still shows through.
@@ -220,13 +215,19 @@ bool Load() {
   }
   sLoadAttempted = true;
 
+  // The vendor camera stack cannot work in this APK: libcameralibrary2.so resolves
+  // getQvrCameraClientInstance() to the 2022 libsxrapi.so that our qiyuapi renderer needs,
+  // and that client is ABI-incompatible with the 2023 camera library - driving it crashes in
+  // CameraClientImpl::startCameraRGB(). Only the matching 2023 libsxrapi.so carries the
+  // SvrCameraManager the SDK expects, and swapping it black-screens the renderer. The bridge
+  // therefore stays compiled but inert unless it is explicitly requested for an experiment.
   char prop[PROP_VALUE_MAX] { 0 };
   __system_property_get("debug.wolvic.qiyu.vst", prop);
-  if (prop[0] == '0') {
-    VRB_LOG("QIYU VST: disabled by debug.wolvic.qiyu.vst=0");
+  if (prop[0] != '1') {
     sDisabled = true;
     return false;
   }
+  VRB_LOG("QIYU VST: opt-in requested by debug.wolvic.qiyu.vst=1");
 
   // libcameralibrary2.so is a DT_NEEDED of libseethroughsdk.so; loading it first keeps
   // the resolver from depending on the linker search order.
@@ -299,18 +300,16 @@ bool Start(uint32_t aWidth, uint32_t aHeight) {
   // so the destination and the frustum are both the eye resolution here.
   sApi.setParams(static_cast<float>(aWidth), static_cast<float>(aHeight),
                  static_cast<float>(aWidth), static_cast<float>(aHeight));
-  const int started = sApi.start(1, 0,
-                                 reinterpret_cast<void*>(
-                                     reinterpret_cast<uintptr_t>(&OnCameraFrame)),
-                                 0);
 
-  sStarted = true;
-  sFramesSeen = 0;
-  sValidated = false;
-  sValid = false;
-  VRB_LOG("QIYU VST: startSeeThrough init=%d start=%d (%ux%u)", initialized, started,
-          aWidth, aHeight);
-  return true;
+  // startSeeThrough(1, 0, cb, 0) is deliberately not called: it spawns a detached camera
+  // thread that reaches CameraClientImpl::startCameraRGB() with a client object the 2023
+  // camera library cannot use, which is the reproducible SIGSEGV from 1.11.12. Without a
+  // camera client there is no way to obtain frames, so the bridge reports failure and the
+  // caller keeps the opaque scene.
+  VRB_ERROR("QIYU VST: the vendor camera SDK cannot be driven from this renderer"
+            " (init=%d); passthrough needs the system/runtime VST path", initialized);
+  Stop();
+  return false;
 }
 
 bool Update() {

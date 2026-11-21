@@ -3,19 +3,23 @@
 // Bridge to the Qiyu vendor see-through SDK (libseethroughsdk.so +
 // libcameralibrary2.so).
 //
-// The system see-through service (com.qiyi.seethroughservice) is only started by the
-// Qiyu OpenXR runtime for an OpenXR client, so an app that renders through qiyuapi
-// cannot make the SXR compositor open the cameras by itself. The vendor SDK, however,
-// is renderer independent: it opens a camera client and hands the frames to the app as
-// GL textures. That is the same shape as the controller bridge - a second vendor
-// subsystem that does not own the display.
+// DISABLED since 1.11.13. The vendor SDK is not renderer independent after all: the
+// camera client it dereferences comes from libsxrapi.so's SvrCameraManager, and the
+// 2.2 MB libsxrapi.so this renderer submits frames through is ABI-incompatible with
+// the 2023 camera library. Calling startSeeThrough() therefore crashed with SIGSEGV
+// in CameraClientImpl::startCameraRGB() every time (see
+// docs/qiyu-passthrough-handoff.md section 13). The two vendor libraries are no
+// longer packaged in the APK and Load() refuses unless debug.wolvic.qiyu.vst=1 is
+// set, so the module is inert and the caller always keeps the opaque scene.
 //
-// Call order (see docs/qiyu-thru3d-passthrough-rea.md):
+// Kept so the recovered ABI and the reasoning stay next to the code that used them:
+//   startSeeThrough(int flags, int a1, void* a2, int waitForFrame)
+//   startSeethroughCamera(int a0, void* a1)
+//   startCameraRGB is vtable slot 0 of the client created by CreateCameraClient()
+//
+// Call order, if it is ever revived on top of a matching libsxrapi.so:
 //   Start() on the thread with the eye EGL context current (once),
 //   Update() once per frame, Draw() per eye, Stop() when passthrough is switched off.
-//
-// All of it is best effort: when the libraries are missing or no camera frame ever
-// arrives the caller keeps the opaque scene.
 
 #include <cstdint>
 

@@ -456,3 +456,127 @@ rectification pipeline, and the exact `drawSeethrough` contract
 (`int drawSeethrough(int leftTexture, int rightTexture, int* outIndex,
 int64_t* outTime, int* outExtra)`, recovered from the disassembly, returns 1
 when it wrote a new frame).
+
+## 13. 1.11.13: the bridge crashed, and why it cannot be repaired here
+
+1.11.12 crashed one to two seconds after enabling passthrough, every time. This
+section is the post-mortem; the code it describes is gone from the build.
+
+### 13.1 The tombstone
+
+Three identical crashes (`14:10:39`, `14:11:09`, `14:13:10`):
+
+```
+Fatal signal 11 (SIGSEGV), code 1 (SEGV_MAPERR), fault addr 0xd650911000531
+tid: VRB Render, pid: com.igalia.wolvic
+#00 libcameralibrary2.so (CameraClientImpl::startCameraRGB(void*)+288)  BuildId cba05146...
+#01 libseethroughsdk.so +0xd954                                        BuildId d52eb595...
+#02 __pthread_start
+```
+
+`#01` is the detached thread that `startSeethroughCamera()` spawns from inside
+`startSeeThrough()`. `BuildId` matches the shipped `svrApi-release.aar` copies, so
+this is our code path and not the system service.
+
+### 13.2 What actually faults
+
+`libcameralibrary2.so` exports its symbols, so the crash site resolves exactly:
+`startCameraRGB` is at `0x45988` and `+288 = 0x45aa8`.
+
+```
+; x24 = the camera client context
+45aa0: ldr x8, [x24, #0x8]   ; x8 = instance returned by getQvrCameraClientInstance()
+45aa4: str x8, [x22]
+45aa8: ldr x8, [x8, #0x8]    ; <-- SEGV, fault addr = x8 + 8
+45aac: ldr x8, [x8, #0x18]   ; vtable slot 3
+45ab4: ldr x0, [x24, #0x10]  ; the qvrcamera_device_helper_t
+```
+
+The register dump matches: `x8 = 0xb90d650911000529`, fault `0xb90d650911000531`.
+The object returned by `getQvrCameraClientInstance()` has a garbage vtable
+pointer, i.e. the client was produced by an ABI-incompatible provider.
+
+The third argument of `startSeeThrough` (`&OnCameraFrame` in 1.11.12) is *not*
+involved. The real ABI, recovered from the disassembly, is:
+
+```
+int  startSeeThrough(int flags, int a1, void* a2, int waitForFrame);
+       flags & 1  -> startSeethroughCamera(a1, a2);
+       waitForFrame & 1 -> wait on a condvar, 3 s timeout, returns whether it timed out
+void startSeethroughCamera(int a0, void* a1);
+       spawns a thread that calls
+       client->vtable[0](client, (a0 != 1), a1, 0, *(0x21000+0xf28));
+```
+
+`a1` is captured into the thread argument block and becomes the `void*` argument
+of `startCameraRGB`, so passing 0 or a function pointer changes nothing: the crash
+is inside the client, before the argument is used.
+
+`setCameraFrameCallback(void*)` is a separate 16-byte export and is the correct
+home for a callback; it has nothing to do with this fault.
+
+### 13.3 Why the camera client is incompatible
+
+`libsxrapi.so` owns `SvrCameraManager` and is the component that creates the
+`qvrcamera_device_helper_t` the SDK dereferences. That matches the strings in
+`libcameralibrary2.so` (`getQvrCameraClientInstance`,
+`getQvrCameraDeviceInstance`, `libqvrcamera_client.old.qti.so`,
+`libqvrcamera_client.so`).
+
+Firefox Reality 12.3 on the same hardware ships the whole consistent 2023 stack:
+
+```
+libsxrapi.so          5 037 976   (2023-05-08)
+libseethroughsdk.so     137 352   (identical to ours)
+libcameralibrary2.so    837 832   (identical to ours)
+libqiyuinterface.so   6 031 584
+libseethrough-core.so 5 665 216
+librelocationsdk.so      55 328
+libQiyuXRCore.so      1 694 640
+```
+
+and drives VST through `SxrApi.sxrEnableSeeThrough(boolean)`. In that library
+`sxrEnableSeeThrough` only stores a flag (`gEnableSeeThrough`); `SvrStartSeeThrough()`
+then calls `setParamsSeeThrough(...)` and `startSeeThrough(...)` from libsxrapi's
+own render loop, with `SvrCameraManager` supplying the camera device. The app is
+never expected to call `startSeeThrough` itself.
+
+Our APK cannot ship that library. `libsxrapi.so` is the renderer: `qiyuapi`
+submits frames through it, and swapping the 2.2 MB 2022 build
+(`sxrApi Version : 4.0.3, Mar  9 2022`) for the 5 MB 2023 one produces a black
+screen at 71.8 fps - the session runs, the eye buffer is never composited. Only
+one `libsxrapi.so` can exist in a process (same SONAME, and `libqiyuapi.so` has it
+in `DT_NEEDED`), so there is no way to have both: either the renderer works or the
+camera stack does.
+
+That is the real conclusion of 1.11.12: the vendor VST SDK is not a
+renderer-independent add-on. It is the other half of the same SXR build, and we
+have to keep the half that draws.
+
+### 13.4 What 1.11.13 does instead
+
+- `startSeeThrough()` is never called; the watchdog threads that crashed are gone.
+- `QiyuVst` is inert unless `debug.wolvic.qiyu.vst=1` is set explicitly.
+- `libcameralibrary2.so` / `libseethroughsdk.so` are no longer packaged.
+- A failed enable request no longer forwards the toggle to native, so the scene
+  cannot be cleared to alpha 0 with nothing behind it (the black-screen failure
+  mode of 1.11.11/1.11.12 after a refused toggle).
+- The ladder logs under `QIYUVST` (low volume, survives chatty) with all three
+  provider statuses.
+
+### 13.5 The only remaining route
+
+System VST is started by the runtime, not by the app: an SXR/OpenXR client asks
+for passthrough and `QiyuOXRCore` sends `PassthroughStart` to
+`com.qiyi.seethroughservice`. `content://com.iqiyi.vr.provider/vst/2`
+(`AppVstStatus`) is a *status report* - the vendor `SeeThroughHelper.writeAppStatus`
+writes exactly the value we write, and it does not start anything. So a build
+that keeps the 2.2 MB `libsxrapi.so` can report the wish but cannot make the
+request.
+
+A future attempt therefore has to change the renderer too: port
+`DeviceDelegateQiyu` to `sxrApi`/`SvrView` (or to the OpenXR delegate that
+supports `XR_QIYU_passthrough`, see `docs/qiyu-thru3d-passthrough-rea.md`) so the
+2023 `libsxrapi.so` can be shipped. That is a renderer change, not a passthrough
+patch, and it must be validated on device before it replaces the current build.
+

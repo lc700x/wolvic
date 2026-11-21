@@ -45,6 +45,12 @@ import android.util.Log;
  */
 public final class QiyuSeeThrough {
     private static final String LOGTAG = "QIYU";
+    /**
+     * Low-volume tag for the enable/disable round trip. "QIYU" also carries the per-frame
+     * native logs, which chatty rate-limits away; a tag that only produces a handful of
+     * lines always survives, so a failed attempt stays diagnosable from a user log.
+     */
+    private static final String VSTTAG = "QIYUVST";
 
     static final String SERVICE_PACKAGE = "com.qiyi.seethroughservice";
     static final String SERVICE_CLASS = "com.qiyi.seethroughservice.SeethroughService";
@@ -66,6 +72,8 @@ public final class QiyuSeeThrough {
             Uri.parse("content://com.iqiyi.vr.provider/vst/1");
     private static final Uri URI_APP_VST_STATUS =
             Uri.parse("content://com.iqiyi.vr.provider/vst/2");
+    private static final Uri URI_SYSTEM_VST_STATUS =
+            Uri.parse("content://com.iqiyi.vr.provider/vst/3");
     private static final String STATUS_COLUMN = "status_value";
 
     private QiyuSeeThrough() {}
@@ -131,9 +139,7 @@ public final class QiyuSeeThrough {
             boolean stopped = sendMode(aContext, MODE_STOP);
             sendBroadcast(aContext, ACTION_VST_OFF);
             writeAppVstStatus(aContext, 0);
-            Log.i(LOGTAG, "QIYU: VST stop, service=" + stopped
-                    + ", rgb=" + readStatus(aContext, URI_RGB_CAMERA_STATUS)
-                    + ", app=" + readStatus(aContext, URI_APP_VST_STATUS));
+            Log.i(VSTTAG, "VST stop, service=" + stopped + ", " + statusSummary(aContext));
             return stopped;
         }
 
@@ -141,46 +147,49 @@ public final class QiyuSeeThrough {
         sendMode(aContext, MODE_APPLY_MODEL);
         boolean serviceAccepted = sendMode(aContext, MODE_START);
         int rgb = waitForCamera(aContext, 1800);
-        Log.i(LOGTAG, "QIYU: VST attempt 1 (service start, accepted=" + serviceAccepted
-                + ") rgb=" + rgb);
+        Log.i(VSTTAG, "VST attempt 1 (service start, accepted=" + serviceAccepted + ") "
+                + statusSummary(aContext));
         if (rgb > 0) {
-            logSuccess(rgb);
+            logSuccess(aContext, rgb);
             return true;
         }
 
         // 2. Broadcast companion of FxR's "com.qiyu.browser.vst.off".
         sendBroadcast(aContext, ACTION_VST_ON);
         rgb = waitForCamera(aContext, 900);
-        Log.i(LOGTAG, "QIYU: VST attempt 2 (broadcast " + ACTION_VST_ON + ") rgb=" + rgb);
+        Log.i(VSTTAG, "VST attempt 2 (broadcast " + ACTION_VST_ON + ") "
+                + statusSummary(aContext));
         if (rgb > 0) {
-            logSuccess(rgb);
+            logSuccess(aContext, rgb);
             return true;
         }
 
         // 3. Vendor status write (SeeThroughHelper.writeAppStatus).
         boolean wrote = writeAppVstStatus(aContext, 1);
         rgb = waitForCamera(aContext, 900);
-        Log.i(LOGTAG, "QIYU: VST attempt 3 (AppVstStatus=1, wrote=" + wrote
-                + ") rgb=" + rgb);
+        Log.i(VSTTAG, "VST attempt 3 (AppVstStatus=1, wrote=" + wrote + ") "
+                + statusSummary(aContext));
         if (rgb > 0) {
-            logSuccess(rgb);
+            logSuccess(aContext, rgb);
             return true;
         }
 
-        // 4. Vendor SXR entry point, only in the newer libsxrapi.
+        // 4. Vendor SXR entry point, only in the newer libsxrapi. On Qiyu X this is where
+        // the runtime hooks in, so the failure reason matters more than the others.
         boolean sxr = sxrEnableSeeThrough(true);
         rgb = waitForCamera(aContext, 900);
-        Log.i(LOGTAG, "QIYU: VST attempt 4 (sxrEnableSeeThrough, called=" + sxr
-                + ") rgb=" + rgb);
+        Log.w(VSTTAG, "VST attempt 4 (sxrEnableSeeThrough, called=" + sxr + ") "
+                + statusSummary(aContext));
         if (rgb > 0) {
-            logSuccess(rgb);
+            logSuccess(aContext, rgb);
             return true;
         }
 
         // Nothing started the cameras. Roll everything back so the scene stays
         // opaque instead of clearing to transparent over a black world.
-        Log.w(LOGTAG, "QIYU: no VST path started the cameras; keeping the opaque scene"
-                + " (service=" + serviceAccepted + ")");
+        Log.w(VSTTAG, "no VST path started the cameras; keeping the opaque scene"
+                + " (service=" + serviceAccepted + ", sxr=" + sxr + ") "
+                + statusSummary(aContext));
         sendMode(aContext, MODE_STOP);
         sendBroadcast(aContext, ACTION_VST_OFF);
         writeAppVstStatus(aContext, 0);
@@ -188,9 +197,22 @@ public final class QiyuSeeThrough {
         return false;
     }
 
-    private static void logSuccess(int aRgb) {
-        Log.i(LOGTAG, "QIYU: VST running, rgb=" + aRgb
-                + ", the eye buffer will now be cleared with alpha 0");
+    /**
+     * One line with the three provider statuses. {@code rgb} is the only signal that the
+     * cameras are actually running; {@code app} is the value we write and {@code sys} is
+     * what the platform reports back, which distinguishes "our write was ignored" from
+     * "the platform accepted it but never opened the cameras".
+     */
+    private static String statusSummary(Context aContext) {
+        return "rgb=" + readStatus(aContext, URI_RGB_CAMERA_STATUS)
+                + " app=" + readStatus(aContext, URI_APP_VST_STATUS)
+                + " sys=" + readStatus(aContext, URI_SYSTEM_VST_STATUS);
+    }
+
+    private static void logSuccess(Context aContext, int aRgb) {
+        Log.i(VSTTAG, "VST running, rgb=" + aRgb
+                + ", the eye buffer will now be cleared with alpha 0, "
+                + statusSummary(aContext));
     }
 
     private static int waitForCamera(Context aContext, long aTimeoutMs) {
@@ -216,10 +238,10 @@ public final class QiyuSeeThrough {
                 intent.putExtra(key, aMode);
             }
             ComponentName started = aContext.startService(intent);
-            Log.i(LOGTAG, "QIYU: seethroughservice mode=" + aMode + " -> " + started);
+            Log.i(VSTTAG, "seethroughservice mode=" + aMode + " -> " + started);
             return started != null;
         } catch (Throwable t) {
-            Log.w(LOGTAG, "QIYU: seethroughservice mode=" + aMode + " failed: " + t);
+            Log.w(VSTTAG, "seethroughservice mode=" + aMode + " failed: " + t);
             return false;
         }
     }
@@ -239,10 +261,10 @@ public final class QiyuSeeThrough {
             values.put(STATUS_COLUMN, String.valueOf(aValue));
             int rows = aContext.getContentResolver()
                     .update(URI_APP_VST_STATUS, values, null, null);
-            Log.i(LOGTAG, "QIYU: AppVstStatus=" + aValue + " rows=" + rows);
+            Log.i(VSTTAG, "AppVstStatus=" + aValue + " rows=" + rows);
             return rows > 0;
         } catch (Throwable t) {
-            Log.w(LOGTAG, "QIYU: cannot write AppVstStatus=" + aValue + ": " + t);
+            Log.w(VSTTAG, "cannot write AppVstStatus=" + aValue + ": " + t);
             return false;
         }
     }
@@ -251,10 +273,10 @@ public final class QiyuSeeThrough {
         try {
             Class<?> sxr = Class.forName("com.qualcomm.sxrapi.SxrApi");
             sxr.getMethod("sxrEnableSeeThrough", boolean.class).invoke(null, aEnable);
-            Log.i(LOGTAG, "QIYU: sxrEnableSeeThrough(" + aEnable + ")");
+            Log.i(VSTTAG, "sxrEnableSeeThrough(" + aEnable + ")");
             return true;
         } catch (Throwable t) {
-            Log.i(LOGTAG, "QIYU: sxrEnableSeeThrough unavailable: " + t);
+            Log.i(VSTTAG, "sxrEnableSeeThrough unavailable: " + t);
             return false;
         }
     }

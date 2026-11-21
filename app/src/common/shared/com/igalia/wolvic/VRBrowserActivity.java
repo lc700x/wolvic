@@ -2050,11 +2050,14 @@ public class VRBrowserActivity extends PlatformActivity implements WidgetManager
                 runOnUiThread(() -> {
                     mQiyuSeeThroughBusy = false;
                     if (!ok) {
-                        Log.i(LOGTAG, "QIYU: the system see-through service did not start;"
-                                + " using the in-app vendor VST bridge instead");
+                        // Nothing opened the cameras, so the compositor has no image to
+                        // blend behind the eye buffer. Forwarding the toggle anyway would
+                        // clear the scene with alpha 0 and leave the user on a black
+                        // screen; keep the opaque scene and leave the switch off.
+                        Log.w(LOGTAG, "QIYU: no see-through pipeline started;"
+                                + " keeping the opaque scene");
+                        return;
                     }
-                    // Always forward the toggle: the native delegate owns the vendor VST
-                    // bridge and only shows the real world once it has a camera frame.
                     mIsPassthroughEnabled = enable;
                     queueRunnable(() -> togglePassthroughNative());
                 });
