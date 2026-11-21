@@ -86,6 +86,11 @@ public final class QiyuSeeThrough {
 
     private static final int MODE_START = 1;
     private static final int MODE_STOP = 2;
+    /**
+     * Applies the {@code org.freedesktop.monado.vst.model} Serializable extra. Not used:
+     * that class only exists in the service, and the handler returns early unless
+     * {@code bSystemVst} is set, so for app VST it would only clear the model.
+     */
     private static final int MODE_APPLY_MODEL = 3;
 
     private static final String ACTION_VST_ON = "com.qiyu.browser.vst.on";
@@ -171,13 +176,17 @@ public final class QiyuSeeThrough {
         // 1. Command the service the way it is declared to be addressed: an implicit
         // intent whose action is org.freedesktop.monado.vst. The component-only intent is
         // kept as a last variant because other firmware builds may resolve it that way.
+        //
+        // Only mode 1 is sent. Mode 3 assigns vstModel from the
+        // "org.freedesktop.monado.vst.model" Serializable extra (which we cannot build) and
+        // then returns early unless bSystemVst is set, so for app VST it is a no-op that
+        // clears any model the system installed.
         int rgb = 0;
         boolean serviceAccepted = false;
         for (int variant = VARIANT_ACTION; variant <= VARIANT_COMPONENT; ++variant) {
-            sendMode(aContext, MODE_APPLY_MODEL, variant);
             boolean accepted = sendMode(aContext, MODE_START, variant);
             serviceAccepted |= accepted;
-            rgb = waitForCamera(aContext, 1200);
+            rgb = waitForCamera(aContext, 1500);
             Log.w(VSTTAG, "VST attempt 1." + variant + " (variant=" + variant
                     + ", accepted=" + accepted + ") " + statusSummary(aContext));
             if (rgb > 0) {
