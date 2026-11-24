@@ -21,6 +21,15 @@ PFN_xrCreatePassthroughLayerFB OpenXRExtensions::sXrCreatePassthroughLayerFB = n
 PFN_xrDestroyPassthroughLayerFB OpenXRExtensions::sXrDestroyPassthroughLayerFB = nullptr;
 PFN_xrPassthroughLayerResumeFB OpenXRExtensions::sXrPassthroughLayerResumeFB = nullptr;
 PFN_xrPassthroughLayerPauseFB OpenXRExtensions::sXrPassthroughLayerPauseFB = nullptr;
+PFN_xrCreatePassthroughFB OpenXRExtensions::sXrCreatePassthroughQIYU = nullptr;
+PFN_xrDestroyPassthroughFB OpenXRExtensions::sXrDestroyPassthroughQIYU = nullptr;
+PFN_xrPassthroughStartFB OpenXRExtensions::sXrPassthroughStartQIYU = nullptr;
+PFN_xrPassthroughPauseFB OpenXRExtensions::sXrPassthroughPauseQIYU = nullptr;
+PFN_xrCreatePassthroughLayerFB OpenXRExtensions::sXrCreatePassthroughLayerQIYU = nullptr;
+PFN_xrDestroyPassthroughLayerFB OpenXRExtensions::sXrDestroyPassthroughLayerQIYU = nullptr;
+PFN_xrPassthroughLayerResumeFB OpenXRExtensions::sXrPassthroughLayerResumeQIYU = nullptr;
+PFN_xrPassthroughLayerPauseFB OpenXRExtensions::sXrPassthroughLayerPauseQIYU = nullptr;
+PFN_xrPassthroughLayerSetStyleFB OpenXRExtensions::sXrPassthroughLayerSetStyleQIYU = nullptr;
 PFN_xrCreateHandMeshSpaceMSFT OpenXRExtensions::sXrCreateHandMeshSpaceMSFT = nullptr;
 PFN_xrUpdateHandMeshMSFT OpenXRExtensions::sXrUpdateHandMeshMSFT = nullptr;
 PFN_xrCreateKeyboardSpaceFB OpenXRExtensions::xrCreateKeyboardSpaceFB = nullptr;
@@ -148,6 +157,27 @@ void OpenXRExtensions::LoadExtensions(XrInstance instance) {
                                           reinterpret_cast<PFN_xrVoidFunction *>(&sXrPassthroughLayerResumeFB)));
         CHECK_XRCMD(xrGetInstanceProcAddr(instance, "xrPassthroughLayerPauseFB",
                                             reinterpret_cast<PFN_xrVoidFunction *>(&sXrPassthroughLayerPauseFB)));
+    }
+
+    if (IsExtensionSupported("XR_QIYU_passthrough")) {
+        CHECK_XRCMD(xrGetInstanceProcAddr(instance, "xrCreatePassthroughQIYU",
+                                          reinterpret_cast<PFN_xrVoidFunction *>(&sXrCreatePassthroughQIYU)));
+        CHECK_XRCMD(xrGetInstanceProcAddr(instance, "xrDestroyPassthroughQIYU",
+                                          reinterpret_cast<PFN_xrVoidFunction *>(&sXrDestroyPassthroughQIYU)));
+        CHECK_XRCMD(xrGetInstanceProcAddr(instance, "xrPassthroughStartQIYU",
+                                          reinterpret_cast<PFN_xrVoidFunction *>(&sXrPassthroughStartQIYU)));
+        CHECK_XRCMD(xrGetInstanceProcAddr(instance, "xrPassthroughPauseQIYU",
+                                          reinterpret_cast<PFN_xrVoidFunction *>(&sXrPassthroughPauseQIYU)));
+        CHECK_XRCMD(xrGetInstanceProcAddr(instance, "xrCreatePassthroughLayerQIYU",
+                                          reinterpret_cast<PFN_xrVoidFunction *>(&sXrCreatePassthroughLayerQIYU)));
+        CHECK_XRCMD(xrGetInstanceProcAddr(instance, "xrDestroyPassthroughLayerQIYU",
+                                          reinterpret_cast<PFN_xrVoidFunction *>(&sXrDestroyPassthroughLayerQIYU)));
+        CHECK_XRCMD(xrGetInstanceProcAddr(instance, "xrPassthroughLayerResumeQIYU",
+                                          reinterpret_cast<PFN_xrVoidFunction *>(&sXrPassthroughLayerResumeQIYU)));
+        CHECK_XRCMD(xrGetInstanceProcAddr(instance, "xrPassthroughLayerPauseQIYU",
+                                          reinterpret_cast<PFN_xrVoidFunction *>(&sXrPassthroughLayerPauseQIYU)));
+        CHECK_XRCMD(xrGetInstanceProcAddr(instance, "xrPassthroughLayerSetStyleQIYU",
+                                          reinterpret_cast<PFN_xrVoidFunction *>(&sXrPassthroughLayerSetStyleQIYU)));
     }
 
     if (IsExtensionSupported(XR_FB_KEYBOARD_TRACKING_EXTENSION_NAME)) {

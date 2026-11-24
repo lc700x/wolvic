@@ -418,15 +418,16 @@ class OpenXRLayerPassthrough {
   public:
     XrCompositionLayerPassthroughFB xrCompositionLayer;
 
-    static OpenXRLayerPassthroughPtr Create(XrPassthroughFB);
+    static OpenXRLayerPassthroughPtr Create(XrPassthroughFB, bool aQiyu = false);
     void Init(XrSession session);
     bool IsValid() const { return mPassthroughLayerHandle != XR_NULL_HANDLE; }
     XrPassthroughLayerFB GetPassthroughLayerHandle() const { return mPassthroughLayerHandle; }
     ~OpenXRLayerPassthrough();
 
 private:
-    XrPassthroughFB mPassthroughInstance;
-    XrPassthroughLayerFB mPassthroughLayerHandle;
+    XrPassthroughFB mPassthroughInstance { XR_NULL_HANDLE };
+    XrPassthroughLayerFB mPassthroughLayerHandle { XR_NULL_HANDLE };
+    bool mQiyu { false };
 };
 
 }

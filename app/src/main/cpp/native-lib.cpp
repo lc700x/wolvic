@@ -26,6 +26,7 @@
 // WebXR keeps working because Gecko drives it through ExternalVR, not OpenXR.
 #include "DeviceDelegateQiyu.h"
 #include "DeviceUtils.h"
+#include "OpenXRExtensions.h"
 #endif
 
 #define STR(x) #x
@@ -110,6 +111,12 @@ CommandCallback(android_app *aApp, int32_t aCmd) {
     case APP_CMD_PAUSE:
       VRB_LOG("APP_CMD_PAUSE");
       if (ctx->mDevice) {
+#if defined(QIYU)
+        // Qiyu's OpenXR runtime can keep the native activity alive in a paused
+        // state after the system HOME transition. Request a real session exit;
+        // the render loop will finish the activity when the request succeeds.
+        ctx->mDevice->ExitApp();
+#endif
         ctx->mDevice->LeaveVR();
       }
       BrowserWorld::Instance().Pause();
@@ -187,15 +194,25 @@ android_main(android_app *aAppState) {
 #endif
 
 #if defined(QIYU)
-  // Prefer the native SXR path on Qiyu hardware: it presents directly to the SXR
-  // compositor, matching the reference client (qiyu_StartVR / StartEye / SubmitFrame).
-  // The OpenXR path stays as a fallback if the device is not a known Qiyu model.
+  // Probe the OpenXR path first on Qiyu. The factory runtime's
+  // XR_QIYU_passthrough extension is the only path that can submit camera and
+  // Wolvic projection layers in one compositor frame. If that extension/runtime
+  // is absent, retain the native SXR delegate for older firmware.
   if (DeviceUtils::GetDeviceTypeFromSystem() != device::UnknownType) {
-    auto qiyu = DeviceDelegateQiyu::Create(BrowserWorld::Instance().GetRenderContext(),
-                                           &sAppContext->mJavaContext);
-    qiyu->SetNativeWindow(aAppState->window);
-    sAppContext->mDevice = qiyu;
-    VRB_LOG("Using native QIYU (SXR) device delegate");
+    auto openxr = DeviceDelegateOpenXR::Create(BrowserWorld::Instance().GetRenderContext(),
+                                                &sAppContext->mJavaContext);
+    if (OpenXRExtensions::IsRuntimeAvailable() &&
+        OpenXRExtensions::IsExtensionSupported("XR_QIYU_passthrough")) {
+      openxr->SetNativeWindow(aAppState->window);
+      sAppContext->mDevice = openxr;
+      VRB_LOG("Using QIYU OpenXR device delegate with XR_QIYU_passthrough");
+    } else {
+      auto qiyu = DeviceDelegateQiyu::Create(BrowserWorld::Instance().GetRenderContext(),
+                                              &sAppContext->mJavaContext);
+      qiyu->SetNativeWindow(aAppState->window);
+      sAppContext->mDevice = qiyu;
+      VRB_LOG("Using native QIYU (SXR) device delegate");
+    }
   } else
 #endif
   {
@@ -225,6 +242,12 @@ android_main(android_app *aAppState) {
   };
   // If 0 returns immediately without blocking. If negative, waits indefinitely for events.
   auto computeALooperTimeout = [aAppState]() {
+      // A Qiyu HOME/pause can invalidate the XR session while BrowserWorld is
+      // already paused. Keep polling in that case so the exit request is observed
+      // and the native activity is finished instead of blocking in ALooper.
+      if (sAppContext->mDevice && sAppContext->mDevice->ShouldExitRenderLoop()) {
+          return 0;
+      }
       return BrowserWorld::Instance().IsPaused() && !sAppContext->mDevice->IsInVRMode() && aAppState->destroyRequested == 0 ? -1 : 0;
   };
 

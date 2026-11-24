@@ -841,17 +841,17 @@ DeviceDelegateQiyu::StartFrame(const FramePrediction aPrediction) {
   mShouldRender = true;
 }
 
-// Passthrough is only reported as active when the real world can actually be shown:
-// either the vendor bridge produced a camera frame, or the bridge is not in use at all
-// and the system see-through service owns the cameras (the alpha-0 clear path). While the
-// bridge is still warming up - and if it never delivers - the scene stays opaque, which is
-// what the previous builds did when the service refused to start.
+// Passthrough is active when the vendor bridge has a camera frame, or when that
+// bridge is unavailable and the Qiyu system service owns the camera pipeline.
 bool
 DeviceDelegateQiyu::IsPassthroughEnabled() const {
   if (!DeviceDelegate::IsPassthroughEnabled()) {
     return false;
   }
-  return m.vstFrame || !qiyu::vst::Available();
+  if (m.vstFrame) {
+    return true;
+  }
+  return !qiyu::vst::Available();
 }
 
 void

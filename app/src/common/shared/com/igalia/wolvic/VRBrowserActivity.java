@@ -116,6 +116,7 @@ import java.util.Objects;
 import java.util.OptionalInt;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
@@ -1035,26 +1036,23 @@ public class VRBrowserActivity extends PlatformActivity implements WidgetManager
         return super.dispatchKeyEvent(event);
     }
 
-    final Object mWaitLock = new Object();
-
-    final Runnable mExitImmersive = new Runnable() {
-        @Override
-        public void run() {
-            exitImmersiveNative();
-            synchronized(mWaitLock) {
-                mWaitLock.notifyAll();
-            }
-        }
-    };
-
     private void exitImmersiveSync() {
-        synchronized (mWaitLock) {
-            queueRunnable(mExitImmersive);
+        CountDownLatch completed = new CountDownLatch(1);
+        queueRunnable(() -> {
             try {
-                mWaitLock.wait();
-            } catch (InterruptedException e) {
-                Log.e(LOGTAG, "Waiting for exit immersive onPause interrupted");
+                exitImmersiveNative();
+            } finally {
+                completed.countDown();
             }
+        });
+
+        try {
+            if (!completed.await(3, TimeUnit.SECONDS)) {
+                Log.e(LOGTAG, "Timed out waiting for immersive exit onPause; continuing lifecycle pause");
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            Log.e(LOGTAG, "Waiting for exit immersive onPause interrupted", e);
         }
     }
 
@@ -2029,6 +2027,12 @@ public class VRBrowserActivity extends PlatformActivity implements WidgetManager
             return;
         }
         final boolean enable = !mIsPassthroughEnabled;
+        if (DeviceType.isQiyu() && usesPassthroughCompositorLayerNative()) {
+            mIsPassthroughEnabled = enable;
+            queueRunnable(() -> togglePassthroughNative());
+            Log.w(LOGTAG, "QIYU: using OpenXR passthrough composition layer");
+            return;
+        }
         if (DeviceType.isQiyu()) {
             if (mQiyuSeeThroughBusy) {
                 Log.i(LOGTAG, "QIYU: see-through request already in flight");
@@ -2079,7 +2083,8 @@ public class VRBrowserActivity extends PlatformActivity implements WidgetManager
     @Override
     public boolean isPassthroughSupported() {
         return DeviceType.isOculusBuild() || DeviceType.isLynx() || DeviceType.isSnapdragonSpaces() || DeviceType.isPicoXR()
-                || (DeviceType.isQiyu() && QiyuSeeThrough.isAvailable(this));
+                || (DeviceType.isQiyu() && (usesPassthroughCompositorLayerNative()
+                        || QiyuSeeThrough.isAvailable(this)));
     }
     @Override
     public boolean areControllersAvailable() {
@@ -2342,6 +2347,7 @@ public class VRBrowserActivity extends PlatformActivity implements WidgetManager
     private native void showVRVideoNative(int aWindowHandler, int aVideoProjection);
     private native void hideVRVideoNative();
     private native void togglePassthroughNative();
+    private native boolean usesPassthroughCompositorLayerNative();
     private native void setLockEnabledNative(@LockMode int aLockMode);
     private native void recenterUIYawNative(@YawTarget int aTarget);
     private native void setControllersVisibleNative(boolean aVisible);

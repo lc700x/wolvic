@@ -228,13 +228,29 @@ XrResult OpenXRInputSource::GetPoseState(XrAction action, XrSpace space, XrSpace
     CHECK_XRCMD(xrGetActionStatePose(mSession, &getInfo, &poseState));
 
     isActive = poseState.isActive;
-
-    if (!poseState.isActive) {
+#if defined(QIYU)
+    // Query the space even when the action is inactive. Qiyu's Monado runtime
+    // reports khr/simple_controller poses inactive while xrLocateSpace still
+    // returns a valid tracked pose.
+#else
+    if (!isActive) {
       return XR_SUCCESS;
     }
+#endif
 
     location = { XR_TYPE_SPACE_LOCATION };
     RETURN_IF_XR_FAILED(xrLocateSpace(space, baseSpace, frameState.predictedDisplayTime, &location));
+
+#if defined(QIYU)
+    // Qiyu's Monado simple_controller reports the pose action as inactive even
+    // while xrLocateSpace returns a fully tracked controller pose. Trust the
+    // location flags in that case, matching the working Qiyu OpenXR client.
+    if (!isActive) {
+      isActive = (location.locationFlags &
+                  (XR_SPACE_LOCATION_ORIENTATION_VALID_BIT |
+                   XR_SPACE_LOCATION_POSITION_VALID_BIT)) != 0;
+    }
+#endif
 
     return XR_SUCCESS;
 }
@@ -798,6 +814,59 @@ void OpenXRInputSource::Update(const XrFrameState& frameState, XrSpace localSpac
         CHECK_XRCMD(CreateActionSpace(mPokePoseAction, mPokeSpace));
     }
 
+#if defined(QIYU)
+    auto applyQiyuControllerFallback = [&]() {
+        bool isGripPoseActive { false };
+        XrSpaceLocation gripLocation { XR_TYPE_SPACE_LOCATION };
+        const XrResult gripResult = GetPoseState(mGripAction, mGripSpace, localSpace, frameState,
+                                                 isGripPoseActive, gripLocation);
+        if (XR_SUCCEEDED(gripResult) &&
+            (gripLocation.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT)) {
+            const bool gripPositionValid =
+                    gripLocation.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT;
+            vrb::Matrix controllerTransform = XrPoseToMatrix(gripLocation.pose);
+            device::CapabilityFlags flags = device::Orientation;
+            if (gripPositionValid) {
+                flags |= device::Position | device::GripSpacePosition;
+                if (renderMode == device::RenderMode::StandAlone) {
+                    controllerTransform.TranslateInPlace(kAverageHeight);
+                }
+            } else {
+                flags |= device::PositionEmulated;
+                auto hand = mHandeness == OpenXRHandFlags::Left ? ElbowModel::HandEnum::Left
+                                                                 : ElbowModel::HandEnum::Right;
+                controllerTransform = elbow->GetTransform(hand, head, controllerTransform);
+            }
+
+            delegate.SetMode(mIndex, ControllerMode::Device);
+            delegate.SetEnabled(mIndex, true);
+            delegate.SetAimEnabled(mIndex, false);
+            delegate.SetCapabilityFlags(mIndex, flags);
+            if (renderMode == device::RenderMode::StandAlone) {
+                delegate.SetTransform(mIndex, controllerTransform);
+                delegate.SetBeamTransform(mIndex, vrb::Matrix::Identity());
+            } else {
+                delegate.SetTransform(mIndex, controllerTransform);
+                delegate.SetImmersiveBeamTransform(mIndex, controllerTransform);
+            }
+
+            QiyuControllerBridge::Instance().ApplyControllerState(
+                    mIndex, mHandeness == OpenXRHandFlags::Left, renderMode, delegate, false);
+            UpdateHaptics(delegate);
+            return true;
+        }
+
+        if (QiyuControllerBridge::Instance().ApplyControllerState(
+                    mIndex, mHandeness == OpenXRHandFlags::Left, renderMode, delegate)) {
+            delegate.SetCapabilityFlags(mIndex, device::Orientation | device::Position |
+                                                device::PositionEmulated);
+            UpdateHaptics(delegate);
+            return true;
+        }
+        return false;
+    };
+#endif
+
     // Pose transforms.
     bool isAimPoseActive { false };
     XrSpaceLocation aimLocation { XR_TYPE_SPACE_LOCATION };
@@ -806,6 +875,11 @@ void OpenXRInputSource::Update(const XrFrameState& frameState, XrSpace localSpac
     if (XR_FAILED(GetPoseState(mPointerAction,  mPointerSpace, localSpace, frameState, isAimPoseActive, aimLocation))) {
 #else
     if (XR_FAILED(GetPoseState(mPointerAction,  mPointerSpace, mGripSpace, frameState, isAimPoseActive, aimLocation))) {
+#endif
+#if defined(QIYU)
+        if (applyQiyuControllerFallback()) {
+            return;
+        }
 #endif
         delegate.SetEnabled(mIndex, false);
         return;
@@ -824,11 +898,7 @@ void OpenXRInputSource::Update(const XrFrameState& frameState, XrSpace localSpac
     if (isControllerUnavailable || mUsingHandInteractionProfile || mustAlwaysCheckHandTracking) {
         if (!handTrackingEnabled) {
 #if defined(QIYU)
-            if (QiyuControllerBridge::Instance().ApplyControllerState(
-                    mIndex, mHandeness == OpenXRHandFlags::Left, renderMode, delegate)) {
-                device::CapabilityFlags flags = device::Orientation | device::Position | device::PositionEmulated;
-                delegate.SetCapabilityFlags(mIndex, flags);
-                UpdateHaptics(delegate);
+            if (applyQiyuControllerFallback()) {
                 return;
             }
 #endif
@@ -850,11 +920,7 @@ void OpenXRInputSource::Update(const XrFrameState& frameState, XrSpace localSpac
             delegate.SetHandJointLocations(mIndex, std::move(jointTransforms), std::move(jointRadii));
         } else if (isControllerUnavailable) {
 #if defined(QIYU)
-            if (QiyuControllerBridge::Instance().ApplyControllerState(
-                    mIndex, mHandeness == OpenXRHandFlags::Left, renderMode, delegate)) {
-                device::CapabilityFlags flags = device::Orientation | device::Position | device::PositionEmulated;
-                delegate.SetCapabilityFlags(mIndex, flags);
-                UpdateHaptics(delegate);
+            if (applyQiyuControllerFallback()) {
                 return;
             }
 #endif
@@ -867,11 +933,7 @@ void OpenXRInputSource::Update(const XrFrameState& frameState, XrSpace localSpac
 #if defined(QIYU)
         // Qiyu X and some QIYU runtimes may not expose a complete OpenXR controller profile.
         // Fall back to the QIYU native controller bridge (qiyuapi) when available.
-        if (QiyuControllerBridge::Instance().ApplyControllerState(
-                mIndex, mHandeness == OpenXRHandFlags::Left, renderMode, delegate)) {
-            device::CapabilityFlags flags = device::Orientation | device::Position | device::PositionEmulated;
-            delegate.SetCapabilityFlags(mIndex, flags);
-            UpdateHaptics(delegate);
+        if (applyQiyuControllerFallback()) {
             return;
         }
 #endif
@@ -1095,6 +1157,14 @@ void OpenXRInputSource::Update(const XrFrameState& frameState, XrSpace localSpac
       }
     }
     delegate.SetAxes(mIndex, axesContainer.data(), axesContainer.size());
+
+    // On Qiyu the runtime exposes only khr/simple_controller for the physical
+    // controllers. Keep OpenXR as the pose authority and overlay the Native SDK
+    // buttons and axes, which the simple-controller profile does not provide.
+#if defined(QIYU)
+    QiyuControllerBridge::Instance().ApplyControllerState(
+        mIndex, mHandeness == OpenXRHandFlags::Left, renderMode, delegate, false);
+#endif
 
     UpdateHaptics(delegate);
 }

@@ -244,25 +244,46 @@ OpenXRLayerEquirect::Update(XrSpace aSpace, const XrPosef &aReorientPose, XrSwap
 // OpenXRLayerPassthrough;
 
 OpenXRLayerPassthroughPtr
-OpenXRLayerPassthrough::Create(XrPassthroughFB passthroughInstance) {
+OpenXRLayerPassthrough::Create(XrPassthroughFB passthroughInstance, bool aQiyu) {
   auto result = std::make_shared<OpenXRLayerPassthrough>();
   result->mPassthroughInstance = passthroughInstance;
+  result->mQiyu = aQiyu;
 
   return result;
 }
 
 void
 OpenXRLayerPassthrough::Init(XrSession session) {
+  if (session == XR_NULL_HANDLE || mPassthroughInstance == XR_NULL_HANDLE) {
+    VRB_WARN("OpenXR passthrough layer init skipped: invalid session or passthrough handle");
+    return;
+  }
   XrPassthroughLayerCreateInfoFB layerCreateInfo = {
-    .type = XR_TYPE_PASSTHROUGH_LAYER_CREATE_INFO_FB,
+    .type = mQiyu ? OpenXRExtensions::kXrTypePassthroughLayerCreateInfoQIYU : XR_TYPE_PASSTHROUGH_LAYER_CREATE_INFO_FB,
     .passthrough = mPassthroughInstance,
+    .flags = 0,
     .purpose = XR_PASSTHROUGH_LAYER_PURPOSE_RECONSTRUCTION_FB
   };
-  CHECK_XRCMD(OpenXRExtensions::sXrCreatePassthroughLayerFB(session, &layerCreateInfo, &mPassthroughLayerHandle));
+  XrResult result = XR_ERROR_FUNCTION_UNSUPPORTED;
+  if (mQiyu && OpenXRExtensions::sXrCreatePassthroughLayerQIYU) {
+    result = OpenXRExtensions::sXrCreatePassthroughLayerQIYU(session, &layerCreateInfo,
+                                                              &mPassthroughLayerHandle);
+  } else if (!mQiyu && OpenXRExtensions::sXrCreatePassthroughLayerFB) {
+    result = OpenXRExtensions::sXrCreatePassthroughLayerFB(session, &layerCreateInfo,
+                                                            &mPassthroughLayerHandle);
+  }
+  if (XR_FAILED(result)) {
+    MessageXrResult(result, mQiyu ? "xrCreatePassthroughLayerQIYU" : "xrCreatePassthroughLayerFB",
+                    FILE_AND_LINE);
+    mPassthroughLayerHandle = XR_NULL_HANDLE;
+    return;
+  }
   xrCompositionLayer = {
-    .type = XR_TYPE_COMPOSITION_LAYER_PASSTHROUGH_FB,
+    .type = mQiyu ? OpenXRExtensions::kXrTypeCompositionLayerPassthroughQIYU : XR_TYPE_COMPOSITION_LAYER_PASSTHROUGH_FB,
     .next = XR_NULL_HANDLE,
-    .flags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT,
+    // Qiyu's runtime expects no alpha-source blending on its passthrough layer;
+    // the environment blend mode remains OPAQUE while the compositor adds camera.
+    .flags = mQiyu ? 0 : XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT,
     .space = XR_NULL_HANDLE,
     .layerHandle = mPassthroughLayerHandle,
   };
@@ -272,7 +293,17 @@ OpenXRLayerPassthrough::~OpenXRLayerPassthrough() {
   if (mPassthroughLayerHandle == XR_NULL_HANDLE)
     return;
 
-  CHECK_XRCMD(OpenXRExtensions::sXrDestroyPassthroughLayerFB(mPassthroughLayerHandle));
+  if (mQiyu) {
+    if (OpenXRExtensions::sXrDestroyPassthroughLayerQIYU) {
+      MessageXrResult(OpenXRExtensions::sXrDestroyPassthroughLayerQIYU(mPassthroughLayerHandle),
+                      "xrDestroyPassthroughLayerQIYU", FILE_AND_LINE);
+    }
+  } else {
+    if (OpenXRExtensions::sXrDestroyPassthroughLayerFB) {
+      MessageXrResult(OpenXRExtensions::sXrDestroyPassthroughLayerFB(mPassthroughLayerHandle),
+                      "xrDestroyPassthroughLayerFB", FILE_AND_LINE);
+    }
+  }
   mPassthroughLayerHandle = XR_NULL_HANDLE;
 }
 

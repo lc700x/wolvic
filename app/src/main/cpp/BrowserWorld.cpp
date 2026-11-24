@@ -1367,6 +1367,11 @@ BrowserWorld::TogglePassthrough() {
   }
 }
 
+bool
+BrowserWorld::UsesPassthroughCompositorLayer() const {
+  return m.device && m.device->usesPassthroughCompositorLayer();
+}
+
 void
 BrowserWorld::SetLockMode(LockMode lockMode) {
   ASSERT_ON_RENDER_THREAD();
@@ -1891,7 +1896,8 @@ BrowserWorld::DrawWorld(device::Eye aEye) {
   const CameraPtr camera = aEye == device::Eye::Left ? m.leftCamera : m.rightCamera;
   m.device->BindEye(aEye);
 
-  // Draw skybox or passthrough layer.
+  // Draw skybox or passthrough layer. Keep the pre-passthrough scene ordering so
+  // browser windows, controller models and beams retain their original blending.
   if (!m.device->IsPassthroughEnabled() || m.device->usesPassthroughCompositorLayer()) {
     m.drawList->Reset();
     if (!m.device->IsPassthroughEnabled())
@@ -2226,6 +2232,11 @@ JNI_METHOD(void, setTemporaryFilePath)
 JNI_METHOD(void, togglePassthroughNative)
 (JNIEnv*, jobject) {
   crow::BrowserWorld::Instance().TogglePassthrough();
+}
+
+JNI_METHOD(jboolean, usesPassthroughCompositorLayerNative)
+(JNIEnv*, jobject) {
+  return crow::BrowserWorld::Instance().UsesPassthroughCompositorLayer() ? JNI_TRUE : JNI_FALSE;
 }
 
 JNI_METHOD(void, setLockEnabledNative)

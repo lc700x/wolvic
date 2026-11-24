@@ -2,6 +2,7 @@
 
 #include "QiyuControllerBridge.h"
 #include "DeviceUtils.h"
+#include "OpenXRHelpers.h"
 #include "SystemUtils.h"
 #include "vrb/Logger.h"
 #include "vrb/Matrix.h"
@@ -127,7 +128,7 @@ void QiyuControllerBridge::EnsureInit(JNIEnv* env, jobject activity) {
   mInitAttempted = true;
 
   // Do NOT call qiyu_StartVR: Wolvic manages the OpenXR session/runtime.
-  const bool ok = mInit(mActivityRef, mVm, GA_OpenGLES, TM_Ground, false);
+  const bool ok = mInit(mActivityRef, mVm, GA_OpenGLES, TM_Device, false);
   VRB_LOG("QIYU controller bridge: qiyu_Init=%d controller_init=%d", ok, mIsControllerInit() ? 1 : 0);
   (void)attached; // keep attached; SDK may use thread-local JNI state
 }
@@ -150,8 +151,9 @@ bool QiyuControllerBridge::Poll(qiyu_ControllerData& left, qiyu_ControllerData& 
 }
 
 bool QiyuControllerBridge::ApplyControllerState(int32_t index, bool leftHanded,
-                                                device::RenderMode /*renderMode*/,
-                                                ControllerDelegate& delegate) {
+                                                device::RenderMode renderMode,
+                                                ControllerDelegate& delegate,
+                                                bool applyPose) {
   if (!mEnabled.load())
     return false;
   // First controller update happens after the OpenXR session is running, which is the
@@ -184,24 +186,33 @@ bool QiyuControllerBridge::ApplyControllerState(int32_t index, bool leftHanded,
     }
     return false;
   }
-  // Provide pose from qiyuapi when available (helps runtimes where OpenXR pose is unreliable).
-  // isShow indicates visibility from the SDK; we still enable the delegate so the model
-  // can be rendered by Wolvic even when OpenXR aim is inactive.
-  (void)0;
-
+  // Enable the controller and keep its model/beam state in sync. The pose is
+  // written below only when the caller explicitly asks the bridge to supply it.
   delegate.SetEnabled(index, true);
   delegate.SetLeftHanded(index, leftHanded);
   delegate.SetTargetRayMode(index, device::TargetRayMode::TrackedPointer);
+  delegate.SetMode(index, ControllerMode::Device);
   delegate.SetBatteryLevel(index, data.batteryLevel);
-  delegate.SetCapabilityFlags(index, device::Orientation | device::Position | device::PositionEmulated);
+  if (applyPose) {
+    delegate.SetCapabilityFlags(index, device::Orientation | device::Position |
+                                        device::PositionEmulated);
+    delegate.SetAimEnabled(index, true);
+  }
 
-  // Provide pose from qiyuapi when available (helps Qiyu X / runtimes where OpenXR pose is unreliable).
-  if (data.isShow || std::abs(data.position.x) + std::abs(data.position.y) + std::abs(data.position.z) > 0.0001f ||
-      std::abs(data.rotation.x) + std::abs(data.rotation.y) + std::abs(data.rotation.z) + std::abs(data.rotation.w) > 0.0001f) {
-    vrb::Quaternion q(data.rotation.x, data.rotation.y, data.rotation.z, data.rotation.w);
-    vrb::Matrix transform = vrb::Matrix::Rotation(q);
-    transform.PreMultiplyInPlace(vrb::Matrix::Position(vrb::Vector(-data.position.x, -data.position.y, -data.position.z)));
-    delegate.SetTransform(index, transform);
+  if (applyPose) {
+    // Fall back to the SDK pose only when the OpenXR pose is not usable. On Qiyu X
+    // the runtime can report a valid simple-controller location while the pose
+    // action itself is inactive; OpenXRInputSource handles that case directly.
+    if (data.isShow || std::abs(data.position.x) + std::abs(data.position.y) + std::abs(data.position.z) > 0.0001f ||
+        std::abs(data.rotation.x) + std::abs(data.rotation.y) + std::abs(data.rotation.z) + std::abs(data.rotation.w) > 0.0001f) {
+      vrb::Quaternion q(data.rotation.x, data.rotation.y, data.rotation.z, data.rotation.w);
+      vrb::Matrix transform = vrb::Matrix::Rotation(q);
+      transform.PreMultiplyInPlace(vrb::Matrix::Position(vrb::Vector(data.position.x, data.position.y, data.position.z)));
+      if (renderMode == device::RenderMode::StandAlone) {
+        transform.TranslateInPlace(kAverageHeight);
+      }
+      delegate.SetTransform(index, transform);
+    }
   }
 
   const bool triggerPressed = (data.button & BT_Trigger) != 0 || data.triggerForce >= kClickThreshold;
@@ -227,12 +238,17 @@ bool QiyuControllerBridge::ApplyControllerState(int32_t index, bool leftHanded,
   if (leftHanded) {
     delegate.SetButtonState(index, ControllerDelegate::BUTTON_X, device::kImmersiveButtonA, axPressed, axTouched, axPressed ? 1.0f : 0.0f);
     delegate.SetButtonState(index, ControllerDelegate::BUTTON_Y, device::kImmersiveButtonB, byPressed, byTouched, byPressed ? 1.0f : 0.0f);
-    delegate.SetButtonState(index, ControllerDelegate::BUTTON_APP, -1, menuPressed, false, menuPressed ? 1.0f : 0.0f);
   } else {
     delegate.SetButtonState(index, ControllerDelegate::BUTTON_A, device::kImmersiveButtonA, axPressed, axTouched, axPressed ? 1.0f : 0.0f);
     delegate.SetButtonState(index, ControllerDelegate::BUTTON_B, device::kImmersiveButtonB, byPressed, byTouched, byPressed ? 1.0f : 0.0f);
-    delegate.SetButtonState(index, ControllerDelegate::BUTTON_APP, -1, menuPressed, false, menuPressed ? 1.0f : 0.0f);
   }
+
+  // Qiyu reports the same BT_Home_Menu bit for both hands; its controller mapping
+  // maps left to /menu/click and right to /system/click. BUTTON_APP is Wolvic's
+  // browser Back action, so only expose the left-hand menu through this button.
+  const bool appMenuPressed = leftHanded && menuPressed;
+  delegate.SetButtonState(index, ControllerDelegate::BUTTON_APP, -1, appMenuPressed, false,
+                          appMenuPressed ? 1.0f : 0.0f);
 
   float axes[4] = {0.0f, 0.0f, data.joyStickPos.x, -data.joyStickPos.y};
   delegate.SetAxes(index, axes, 4);

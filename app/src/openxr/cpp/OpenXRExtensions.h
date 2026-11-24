@@ -37,6 +37,26 @@ namespace crow {
     static PFN_xrPassthroughLayerResumeFB sXrPassthroughLayerResumeFB;
     static PFN_xrPassthroughLayerPauseFB sXrPassthroughLayerPauseFB;
 
+    // Qiyu exposes the FB passthrough ABI under XR_QIYU_passthrough. The
+    // function signatures are identical; only the entry-point names and
+    // structure type values differ.
+    static PFN_xrCreatePassthroughFB sXrCreatePassthroughQIYU;
+    static PFN_xrDestroyPassthroughFB sXrDestroyPassthroughQIYU;
+    static PFN_xrPassthroughStartFB sXrPassthroughStartQIYU;
+    static PFN_xrPassthroughPauseFB sXrPassthroughPauseQIYU;
+    static PFN_xrCreatePassthroughLayerFB sXrCreatePassthroughLayerQIYU;
+    static PFN_xrDestroyPassthroughLayerFB sXrDestroyPassthroughLayerQIYU;
+    static PFN_xrPassthroughLayerResumeFB sXrPassthroughLayerResumeQIYU;
+    static PFN_xrPassthroughLayerPauseFB sXrPassthroughLayerPauseQIYU;
+    static PFN_xrPassthroughLayerSetStyleFB sXrPassthroughLayerSetStyleQIYU;
+
+    // Private Qiyu OpenXR extension values used by the working Supermoon client.
+    // These are not defined by the public Qiyu Native SDK headers.
+    static constexpr XrStructureType kXrTypePassthroughCreateInfoQIYU = static_cast<XrStructureType>(0x3B9FA431);
+    static constexpr XrStructureType kXrTypePassthroughLayerCreateInfoQIYU = static_cast<XrStructureType>(0x3B9FA432);
+    static constexpr XrStructureType kXrTypeCompositionLayerPassthroughQIYU = static_cast<XrStructureType>(0x3B9FA433);
+    static constexpr XrStructureType kXrTypePassthroughStyleQIYU = static_cast<XrStructureType>(0x3B9FA436);
+
     static PFN_xrCreateHandMeshSpaceMSFT sXrCreateHandMeshSpaceMSFT;
     static PFN_xrUpdateHandMeshMSFT sXrUpdateHandMeshMSFT;
 

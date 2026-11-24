@@ -16,6 +16,8 @@ enum class HandleEventResult { NoError, NonRecoverableError, NeedsReinit };
 virtual void initializePassthrough(XrSession) {}
 virtual bool usesCompositorLayer() const { return false; }
 virtual HandleEventResult handleEvent(const XrEventDataBaseHeader&) { return HandleEventResult::NoError; };
+virtual void setLayerEnabled(XrPassthroughLayerFB, bool) const {}
+virtual void configureLayer(XrPassthroughLayerFB) const {}
 virtual ~OpenXRPassthroughStrategy() = default;
 virtual bool isReady() const { return mIsInErrorState; };
 virtual OpenXRLayerPassthroughPtr createLayerIfSupported() const;
@@ -33,6 +35,21 @@ private:
 void initializePassthrough(XrSession) override;
 bool usesCompositorLayer() const override { return true; }
 HandleEventResult handleEvent(const XrEventDataBaseHeader&) override;
+void setLayerEnabled(XrPassthroughLayerFB, bool) const override;
+bool isReady() const override;
+OpenXRLayerPassthroughPtr createLayerIfSupported() const override;
+
+XrPassthroughFB passthroughHandle { XR_NULL_HANDLE };
+};
+
+class OpenXRPassthroughStrategyQIYUExtension : public OpenXRPassthroughStrategy {
+public:
+~OpenXRPassthroughStrategyQIYUExtension();
+private:
+void initializePassthrough(XrSession) override;
+bool usesCompositorLayer() const override { return true; }
+void setLayerEnabled(XrPassthroughLayerFB, bool) const override;
+void configureLayer(XrPassthroughLayerFB) const override;
 bool isReady() const override;
 OpenXRLayerPassthroughPtr createLayerIfSupported() const override;
 

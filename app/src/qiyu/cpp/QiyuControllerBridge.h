@@ -49,8 +49,10 @@ public:
   bool Init(JNIEnv* env, jobject activity);
 
   // Returns true if qiyuapi reported a connected controller and state was applied.
+  // When applyPose is false, OpenXR remains the sole source of the controller pose;
+  // the bridge only fills in the buttons, axes and battery state.
   bool ApplyControllerState(int32_t index, bool leftHanded, device::RenderMode renderMode,
-                            ControllerDelegate& delegate);
+                            ControllerDelegate& delegate, bool applyPose = true);
   void ApplyHaptic(int32_t index, bool leftHanded, float durationSeconds, float amplitude);
 
 private:

@@ -49,6 +49,7 @@ public:
   void EndFrame();
   void TriggerHapticFeedback(const float aPulseDuration, const float aPulseIntensity, const int aControllerId);
   void TogglePassthrough();
+  bool UsesPassthroughCompositorLayer() const;
   enum class LockMode { NO_LOCK, HEAD, CONTROLLER };
   void SetLockMode(LockMode);
   void SetTemporaryFilePath(const std::string& aPath);

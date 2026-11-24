@@ -127,6 +127,7 @@ struct DeviceDelegateOpenXR::State {
   bool isEyeTrackingSupported { false };
   bool handTrackingEnabled { true };
   bool shouldUsePassthrough { false };
+  bool exitRequested { false };
 
   bool IsPositionTrackingSupported() {
       // No runtime (e.g. Qiyu MIX without OpenXR broker): treat as unsupported instead of throwing.
@@ -214,6 +215,9 @@ struct DeviceDelegateOpenXR::State {
 
     if (OpenXRExtensions::IsExtensionSupported(XR_FB_PASSTHROUGH_EXTENSION_NAME)) {
       extensions.push_back(XR_FB_PASSTHROUGH_EXTENSION_NAME);
+    }
+    if (OpenXRExtensions::IsExtensionSupported("XR_QIYU_passthrough")) {
+      extensions.push_back("XR_QIYU_passthrough");
     }
 
     if (OpenXRExtensions::IsExtensionSupported(XR_ML_ML2_CONTROLLER_INTERACTION_EXTENSION_NAME))
@@ -325,7 +329,13 @@ struct DeviceDelegateOpenXR::State {
     CHECK_XRCMD(xrGetSystemProperties(instance, system, &systemProperties))
     VRB_LOG("OpenXR system name: %s", systemProperties.systemName);
 
-    layersEnabled = systemProperties.graphicsProperties.maxLayerCount > 1 && OpenXRExtensions::IsExtensionSupported(XR_KHR_ANDROID_SURFACE_SWAPCHAIN_EXTENSION_NAME);
+    const bool androidSurfaceSwapchainSupported =
+        OpenXRExtensions::IsExtensionSupported(XR_KHR_ANDROID_SURFACE_SWAPCHAIN_EXTENSION_NAME);
+    layersEnabled = systemProperties.graphicsProperties.maxLayerCount > 1 && androidSurfaceSwapchainSupported;
+    VRB_LOG("OpenXR composition layers: max=%u android_surface_swapchain=%s layersEnabled=%s",
+            systemProperties.graphicsProperties.maxLayerCount,
+            androidSurfaceSwapchainSupported ? "yes" : "no",
+            layersEnabled ? "yes" : "no");
     if (systemProperties.graphicsProperties.maxLayerCount == 0)
         VRB_ERROR("OpenXR runtime reports 0 layers. There must be at least 1");
 
@@ -335,7 +345,10 @@ struct DeviceDelegateOpenXR::State {
     VRB_LOG("OpenXR runtime %s FB passthrough extension", passthroughProperties.supportsPassthrough ? "does support" : "doesn't support");
 
     InitializeBlendModes();
-    if (passthroughProperties.supportsPassthrough) {
+    if (OpenXRExtensions::IsExtensionSupported("XR_QIYU_passthrough")) {
+        passthroughStrategy = std::make_unique<OpenXRPassthroughStrategyQIYUExtension>();
+        VRB_LOG("OpenXR runtime supports Qiyu passthrough");
+    } else if (passthroughProperties.supportsPassthrough) {
         passthroughStrategy = std::make_unique<OpenXRPassthroughStrategyFBExtension>();
     } else {
         CHECK(passthroughBlendMode != XR_ENVIRONMENT_BLEND_MODE_MAX_ENUM);
@@ -467,8 +480,16 @@ struct DeviceDelegateOpenXR::State {
       const auto supportsAlphaBlendMode = std::find(blendModes.begin(), blendModes.end(), blendMode) != blendModes.end();
       CHECK(supportsOpaqueBlendMode || supportsAdditiveBlendMode || supportsAlphaBlendMode);
 
-      passthroughBlendMode = supportsAdditiveBlendMode ? XR_ENVIRONMENT_BLEND_MODE_ADDITIVE : (supportsAlphaBlendMode ? XR_ENVIRONMENT_BLEND_MODE_ALPHA_BLEND : XR_ENVIRONMENT_BLEND_MODE_OPAQUE);
-      defaultBlendMode = supportsOpaqueBlendMode ? XR_ENVIRONMENT_BLEND_MODE_OPAQUE : passthroughBlendMode;
+      const auto fallbackBlendMode = supportsAdditiveBlendMode ? XR_ENVIRONMENT_BLEND_MODE_ADDITIVE :
+          (supportsAlphaBlendMode ? XR_ENVIRONMENT_BLEND_MODE_ALPHA_BLEND : XR_ENVIRONMENT_BLEND_MODE_OPAQUE);
+      passthroughBlendMode = fallbackBlendMode;
+      defaultBlendMode = supportsOpaqueBlendMode ? XR_ENVIRONMENT_BLEND_MODE_OPAQUE : fallbackBlendMode;
+      if (OpenXRExtensions::IsExtensionSupported("XR_QIYU_passthrough") && supportsOpaqueBlendMode) {
+        // Qiyu composites its passthrough composition layer with the projection
+        // layer in OPAQUE mode. ADDITIVE double-composites the camera and washes
+        // out the passthrough colors.
+        passthroughBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
+      }
       VRB_LOG("OpenXR: selected default blend mode %s", to_string(defaultBlendMode));
       VRB_LOG("OpenXR: selected passthrough blend mode %s", to_string(passthroughBlendMode));
   }
@@ -724,8 +745,16 @@ struct DeviceDelegateOpenXR::State {
       }
       case XR_SESSION_STATE_FOCUSED: {
         VRB_LOG("XR_SESSION_STATE_FOCUSED");
-        CHECK(previousSessionState == XR_SESSION_STATE_VISIBLE);
-          VRBrowser::OnAppFocusChanged(true);
+        // The runtime may report SYNCHRONIZED before FOCUSED when returning from
+        // the system home/overlay. Do not turn that valid recovery path into a
+        // process abort; focus notifications are idempotent in VRBrowser.
+        if (previousSessionState != XR_SESSION_STATE_VISIBLE &&
+            previousSessionState != XR_SESSION_STATE_SYNCHRONIZED &&
+            previousSessionState != XR_SESSION_STATE_FOCUSED) {
+          VRB_WARN("OpenXR focus restored from unexpected state %s",
+                   to_string(previousSessionState));
+        }
+        VRBrowser::OnAppFocusChanged(true);
         break;
       }
       case XR_SESSION_STATE_SYNCHRONIZED: {
@@ -735,7 +764,18 @@ struct DeviceDelegateOpenXR::State {
       case XR_SESSION_STATE_STOPPING: {
         VRB_LOG("XR_SESSION_STATE_STOPPING");
         vrReady = false;
-        CHECK_XRCMD(xrEndSession(session))
+#if defined(QIYU)
+        // On Qiyu a HOME transition can stop the runtime session without
+        // delivering a matching Android destroy immediately. Mark it as a
+        // terminal transition so the native loop cannot remain paused forever.
+        exitRequested = true;
+#endif
+        if (session != XR_NULL_HANDLE) {
+          // HOME and other system overlays can make teardown return a runtime
+          // error. Teardown must remain best-effort so the render thread does
+          // not abort while the runtime is already changing session state.
+          MessageXrResult(xrEndSession(session), "xrEndSession", FILE_AND_LINE);
+        }
         break;
       }
       case XR_SESSION_STATE_EXITING: {
@@ -904,7 +944,9 @@ struct DeviceDelegateOpenXR::State {
   }
 
   bool IsPassthroughLayerReady() {
-    if (!passthroughStrategy->isReady() || passthroughLayer == nullptr || !passthroughLayer->IsValid())
+    if (!passthroughStrategy || session == XR_NULL_HANDLE ||
+        !passthroughStrategy->isReady() || passthroughLayer == nullptr ||
+        !passthroughLayer->IsValid())
       return false;
 
     return true;
@@ -1087,14 +1129,20 @@ DeviceDelegateOpenXR::ProcessEvents() {
         VRB_DEBUG("OpenXR: reference space changed. User recentered the view?");
         break;
       case XR_TYPE_EVENT_DATA_PASSTHROUGH_STATE_CHANGED_FB: {
+        if (!m.passthroughStrategy) {
+          VRB_WARN("OpenXR passthrough state event received without a strategy");
+          break;
+        }
         auto result = m.passthroughStrategy->handleEvent(*ev);
         if (result == OpenXRPassthroughStrategy::HandleEventResult::NonRecoverableError) {
-            if (m.passthroughLayer->IsValid())
+            if (m.passthroughLayer && m.passthroughLayer->IsValid())
                 m.passthroughLayer = nullptr;
         } else if (result == OpenXRPassthroughStrategy::HandleEventResult::NeedsReinit) {
             // TODO: return a bool with the initialization result?
-            m.passthroughStrategy->initializePassthrough(m.session);
-            m.passthroughLayer->Init(m.session);
+            if (m.session != XR_NULL_HANDLE && m.passthroughLayer) {
+              m.passthroughStrategy->initializePassthrough(m.session);
+              m.passthroughLayer->Init(m.session);
+            }
         }
         break;
       }
@@ -1563,18 +1611,28 @@ DeviceDelegateOpenXR::CreateLayerEquirect(const VRLayerPtr &aSource) {
 void
 DeviceDelegateOpenXR::CreateLayerPassthrough() {
   assert(m.passthroughStrategy);
-  if (!m.layersEnabled || m.passthroughLayer || !m.passthroughStrategy->usesCompositorLayer()) {
+  if (m.passthroughLayer || !m.passthroughStrategy->usesCompositorLayer()) {
+    return;
+  }
+  if (m.session == XR_NULL_HANDLE || !m.passthroughStrategy->isReady()) {
+    VRB_WARN("OpenXR passthrough layer deferred: session=%p strategyReady=%s",
+             m.session, m.passthroughStrategy->isReady() ? "yes" : "no");
     return;
   }
 
   m.passthroughLayer = m.passthroughStrategy->createLayerIfSupported();
-  VRB_LOG("--- Passthrough layer created ---");
-  assert(m.passthroughLayer);
+  if (!m.passthroughLayer) {
+    VRB_ERROR("OpenXR passthrough layer creation returned null");
+    return;
+  }
 
-  assert(m.session != XR_NULL_HANDLE);
+  VRB_LOG("OpenXR passthrough layer object created");
   m.passthroughLayer->Init(m.session);
+  m.passthroughStrategy->configureLayer(m.passthroughLayer->GetPassthroughLayerHandle());
 
   UpdatePassthrough();
+  VRB_LOG("OpenXR passthrough layer initialized and %s",
+          m.shouldUsePassthrough ? "enabled" : "paused");
 }
 
 bool
@@ -1706,6 +1764,7 @@ DeviceDelegateOpenXR::EnterVR(const crow::BrowserEGLContext& aEGLContext) {
 
   CHECK_XRCMD(xrCreateSession(m.instance, &createInfo, &m.session));
   CHECK(m.session != XR_NULL_HANDLE);
+  m.exitRequested = false;
   VRB_LOG("OpenXR session created succesfully");
 
   m.UpdateSpaces();
@@ -1784,14 +1843,33 @@ DeviceDelegateOpenXR::IsInVRMode() const {
 
 bool
 DeviceDelegateOpenXR::ExitApp() {
-  xrRequestExitSession(m.session);
+  if (m.session == XR_NULL_HANDLE) {
+#if defined(QIYU)
+    m.exitRequested = true;
+#endif
+    return false;
+  }
+#if defined(QIYU)
+  // HOME must terminate the native activity even if the runtime has already
+  // moved the session to STOPPING and rejects xrRequestExitSession.
+  m.exitRequested = true;
+#endif
+  const XrResult result = xrRequestExitSession(m.session);
+  if (XR_FAILED(result)) {
+    VRB_WARN("OpenXR exit request failed: %s", to_string(result));
+    return false;
+  }
+  m.exitRequested = true;
+  VRB_LOG("OpenXR session exit requested");
   return true;
 }
 
 bool
 DeviceDelegateOpenXR::ShouldExitRenderLoop() const
 {
-  return m.sessionState == XR_SESSION_STATE_EXITING || m.sessionState == XR_SESSION_STATE_LOSS_PENDING;
+  return m.exitRequested ||
+         m.sessionState == XR_SESSION_STATE_EXITING ||
+         m.sessionState == XR_SESSION_STATE_LOSS_PENDING;
 }
 
 DeviceDelegateOpenXR::DeviceDelegateOpenXR(State &aState) : m(aState) {}
@@ -1826,13 +1904,12 @@ DeviceDelegateOpenXR::TogglePassthroughEnabled() {
 void
 DeviceDelegateOpenXR::UpdatePassthrough() {
   m.shouldUsePassthrough = IsPassthroughEnabled();
-  if (!m.IsPassthroughLayerReady())
+  if (!m.IsPassthroughLayerReady() ||
+      (m.sessionState != XR_SESSION_STATE_VISIBLE &&
+       m.sessionState != XR_SESSION_STATE_FOCUSED))
     return;
 
-  if (m.shouldUsePassthrough)
-    OpenXRExtensions::sXrPassthroughLayerResumeFB(m.passthroughLayer->GetPassthroughLayerHandle());
-  else
-    OpenXRExtensions::sXrPassthroughLayerPauseFB(m.passthroughLayer->GetPassthroughLayerHandle());
+  m.passthroughStrategy->setLayerEnabled(m.passthroughLayer->GetPassthroughLayerHandle(), m.shouldUsePassthrough);
 }
 
 unsigned

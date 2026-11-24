@@ -5,7 +5,6 @@
 package com.igalia.wolvic;
 
 import android.content.ComponentName;
-import android.content.ContentValues;
 import android.content.Context;
 import android.content.Intent;
 import android.database.Cursor;
@@ -21,27 +20,20 @@ import android.util.Log;
  * only has to clear its eye buffer with an alpha of 0 where the real world has
  * to show through.
  *
- * <p>Enabling therefore walks a ladder of the known mechanisms, cheapest and
- * best documented first, and stops as soon as {@code RgbCameraStatus} reports
- * that the cameras are actually running:
+ * <p>The service exposes a command intent. The action is important: starting the service by
+ * explicit component alone leaves the service in its default mode and ignores the requested
+ * operation. Mode 1 is the app-VST path, which keeps the Wolvic eye buffer visible over the
+ * camera layer; mode 2 stops it.
  *
  * <ol>
- *   <li>Start the service with a {@code mode} extra. Observed on device every
- *       time a Qiyu OpenXR application asked for passthrough
- *       ({@code SeethroughService: onStartCommand mode = 1}): {@code 3} =
- *       (re)apply the passthrough layer model, {@code 1} = start the cameras,
- *       {@code 2} = stop.</li>
- *   <li>The {@code com.qiyu.browser.vst.on} broadcast; FxR sends the
- *       {@code .off} counterpart when it disables passthrough.</li>
- *   <li>Writing {@code AppVstStatus} through the VST provider, which is what
- *       the vendor {@code SeeThroughHelper.writeAppStatus()} does.</li>
- *   <li>{@code SxrApi.sxrEnableSeeThrough()}, only present in the newer 5 MB
- *       {@code libsxrapi.so}.</li>
+ *   <li>Start {@code com.qiyi.seethroughservice/.SeethroughService} with action
+ *       {@code org.freedesktop.monado.vst}.</li>
+ *   <li>Send extra {@code org.freedesktop.monado.vst=1} to start, or {@code =2} to stop.</li>
+ *   <li>Wait for {@code RgbCameraStatus} before reporting success to the renderer.</li>
  * </ol>
  *
  * <p>The provider at {@code content://com.iqiyi.vr.provider/vst/1} is
- * {@code RgbCameraStatus}. It is the only trustworthy success signal: the
- * service start returns a {@link ComponentName} even when it does nothing.
+ * {@code RgbCameraStatus}. It is the only trustworthy success signal.
  */
 public final class QiyuSeeThrough {
     private static final String LOGTAG = "QIYU";
@@ -54,47 +46,29 @@ public final class QiyuSeeThrough {
 
     static final String SERVICE_PACKAGE = "com.qiyi.seethroughservice";
     static final String SERVICE_CLASS = "com.qiyi.seethroughservice.SeethroughService";
+    private static final long STATUS_TIMEOUT_MS = 1500L;
 
     /**
-     * The service is addressed through this intent-filter action, and the same string is
-     * also the key of the {@code mode} extra. Decompiled from the device's
-     * {@code SeethroughService.onStartCommand}:
+     * The service's resolver entry and its mode extra use the same action string. Keep both
+     * values explicit: a component-only start is accepted by Android but is ignored by the
+     * service because its action is null.
      *
      * <pre>
-     * mode = intent.getIntExtra("org.freedesktop.monado.vst", 0);
-     * switch (mode) {
-     *   case 1: isAppVST = true;  VstManager.startSeethrough(); break;   // mode 1 = start
-     *   case 2: isAppVST = false; VstManager.stopSeethrough();  break;   // mode 2 = stop
-     *   case 3: vstModel = intent.getSerializableExtra(
-     *               "org.freedesktop.monado.vst.model"); setVstModel(...); break;
-     * }
+     * am startservice -a org.freedesktop.monado.vst
+     *     --ei org.freedesktop.monado.vst 1
      * </pre>
-     *
-     * 1.11.11-1.11.15 sent the mode under the key {@code "mode"}, which the service never
-     * reads, so every command arrived as {@code mode = 0} and was ignored. The bind-only
-     * interface ({@code ISeethroughInterface.stratSeethrough()}, transaction 2) drives the
-     * same path, but the startService contract is enough.
      */
     private static final String ACTION_VST = "org.freedesktop.monado.vst";
 
-    /** Intent shapes tried in order until {@code RgbCameraStatus} reports the cameras. */
+    /** Intent shapes used for the action path and old-firmware stop fallback. */
     private static final int VARIANT_ACTION = 0;
     private static final int VARIANT_COMPONENT = 1;
 
-    /** Extra key read by {@code SeethroughService.onStartCommand} (same string as the action). */
+    /** Extra key read by {@code SeethroughService.onStartCommand}. */
     private static final String EXTRA_MODE = ACTION_VST;
 
     private static final int MODE_START = 1;
     private static final int MODE_STOP = 2;
-    /**
-     * Applies the {@code org.freedesktop.monado.vst.model} Serializable extra. Not used:
-     * that class only exists in the service, and the handler returns early unless
-     * {@code bSystemVst} is set, so for app VST it would only clear the model.
-     */
-    private static final int MODE_APPLY_MODEL = 3;
-
-    private static final String ACTION_VST_ON = "com.qiyu.browser.vst.on";
-    private static final String ACTION_VST_OFF = "com.qiyu.browser.vst.off";
 
     private static final Uri URI_RGB_CAMERA_STATUS =
             Uri.parse("content://com.iqiyi.vr.provider/vst/1");
@@ -164,77 +138,31 @@ public final class QiyuSeeThrough {
      */
     public static boolean setEnabled(Context aContext, boolean aEnable) {
         if (!aEnable) {
-            // Both shapes: stop must work even if the firmware only accepts the other one.
-            boolean stopped = sendMode(aContext, MODE_STOP)
-                    | sendMode(aContext, MODE_STOP, VARIANT_COMPONENT);
-            sendBroadcast(aContext, ACTION_VST_OFF);
-            writeAppVstStatus(aContext, 0);
-            Log.w(VSTTAG, "VST stop, service=" + stopped + ", " + statusSummary(aContext));
+            boolean stopped = sendMode(aContext, MODE_STOP);
+            if (!stopped) {
+                // Older firmware may expose only the component form for stopping. Never use
+                // that form for enabling: action=null makes the service ignore the mode.
+                stopped = sendMode(aContext, MODE_STOP, VARIANT_COMPONENT);
+            }
+            Log.w(VSTTAG, "VST stop, accepted=" + stopped + ", " + statusSummary(aContext));
             return stopped;
         }
 
-        // 1. Command the service the way it is declared to be addressed: an implicit
-        // intent whose action is org.freedesktop.monado.vst. The component-only intent is
-        // kept as a last variant because other firmware builds may resolve it that way.
-        //
-        // Only mode 1 is sent. Mode 3 assigns vstModel from the
-        // "org.freedesktop.monado.vst.model" Serializable extra (which we cannot build) and
-        // then returns early unless bSystemVst is set, so for app VST it is a no-op that
-        // clears any model the system installed.
-        int rgb = 0;
-        boolean serviceAccepted = false;
-        for (int variant = VARIANT_ACTION; variant <= VARIANT_COMPONENT; ++variant) {
-            boolean accepted = sendMode(aContext, MODE_START, variant);
-            serviceAccepted |= accepted;
-            rgb = waitForCamera(aContext, 1500);
-            Log.w(VSTTAG, "VST attempt 1." + variant + " (variant=" + variant
-                    + ", accepted=" + accepted + ") " + statusSummary(aContext));
-            if (rgb > 0) {
-                logSuccess(aContext, rgb);
-                return true;
-            }
-        }
-
-        // 2. Broadcast companion of FxR's "com.qiyu.browser.vst.off".
-        sendBroadcast(aContext, ACTION_VST_ON);
-        rgb = waitForCamera(aContext, 900);
-        Log.w(VSTTAG, "VST attempt 2 (broadcast " + ACTION_VST_ON + ") "
-                + statusSummary(aContext));
+        boolean invoked = sendMode(aContext, MODE_START);
+        int rgb = invoked ? waitForCamera(aContext, STATUS_TIMEOUT_MS) : 0;
+        Log.w(VSTTAG, "VST App start invoked=" + invoked + ", " + statusSummary(aContext));
         if (rgb > 0) {
             logSuccess(aContext, rgb);
             return true;
         }
 
-        // 3. Vendor status write (SeeThroughHelper.writeAppStatus).
-        boolean wrote = writeAppVstStatus(aContext, 1);
-        rgb = waitForCamera(aContext, 900);
-        Log.w(VSTTAG, "VST attempt 3 (AppVstStatus=1, wrote=" + wrote + ") "
-                + statusSummary(aContext));
-        if (rgb > 0) {
-            logSuccess(aContext, rgb);
-            return true;
+        // Do not clear the eye buffer unless the service reported running cameras. Otherwise a
+        // failed command would reproduce the black/empty scene seen on unsupported firmware.
+        if (invoked) {
+            sendMode(aContext, MODE_STOP);
         }
-
-        // 4. Vendor SXR entry point, only in the newer libsxrapi. On Qiyu X this is where
-        // the runtime hooks in, so the failure reason matters more than the others.
-        boolean sxr = sxrEnableSeeThrough(true);
-        rgb = waitForCamera(aContext, 900);
-        Log.w(VSTTAG, "VST attempt 4 (sxrEnableSeeThrough, called=" + sxr + ") "
-                + statusSummary(aContext));
-        if (rgb > 0) {
-            logSuccess(aContext, rgb);
-            return true;
-        }
-
-        // Nothing started the cameras. Roll everything back so the scene stays
-        // opaque instead of clearing to transparent over a black world.
-        Log.w(VSTTAG, "no VST path started the cameras; keeping the opaque scene"
-                + " (service=" + serviceAccepted + ", sxr=" + sxr + ") "
-                + statusSummary(aContext));
-        sendMode(aContext, MODE_STOP);
-        sendBroadcast(aContext, ACTION_VST_OFF);
-        writeAppVstStatus(aContext, 0);
-        sxrEnableSeeThrough(false);
+        Log.w(VSTTAG, "no App VST command started the cameras; keeping the opaque scene"
+                + " " + statusSummary(aContext));
         return false;
     }
 
@@ -276,8 +204,8 @@ public final class QiyuSeeThrough {
     }
 
     /**
-     * Starts the see-through service with the {@code mode} command, using one of the intent
-     * shapes described on {@link #ACTION_VST}.
+     * Sends a command to the exported service. The action variant is required by current Qiyu
+     * firmware; the explicit-component variant is retained only as a stop fallback.
      */
     private static boolean sendMode(Context aContext, int aMode, int aVariant) {
         try {
@@ -299,41 +227,6 @@ public final class QiyuSeeThrough {
         } catch (Throwable t) {
             Log.w(VSTTAG, "seethroughservice mode=" + aMode + " variant=" + aVariant
                     + " failed: " + t);
-            return false;
-        }
-    }
-
-    private static void sendBroadcast(Context aContext, String aAction) {
-        try {
-            aContext.sendBroadcast(new Intent(aAction));
-            Log.i(LOGTAG, "QIYU: broadcast " + aAction);
-        } catch (Throwable t) {
-            Log.w(LOGTAG, "QIYU: broadcast " + aAction + " failed: " + t);
-        }
-    }
-
-    private static boolean writeAppVstStatus(Context aContext, int aValue) {
-        try {
-            ContentValues values = new ContentValues();
-            values.put(STATUS_COLUMN, String.valueOf(aValue));
-            int rows = aContext.getContentResolver()
-                    .update(URI_APP_VST_STATUS, values, null, null);
-            Log.w(VSTTAG, "AppVstStatus=" + aValue + " rows=" + rows);
-            return rows > 0;
-        } catch (Throwable t) {
-            Log.w(VSTTAG, "cannot write AppVstStatus=" + aValue + ": " + t);
-            return false;
-        }
-    }
-
-    private static boolean sxrEnableSeeThrough(boolean aEnable) {
-        try {
-            Class<?> sxr = Class.forName("com.qualcomm.sxrapi.SxrApi");
-            sxr.getMethod("sxrEnableSeeThrough", boolean.class).invoke(null, aEnable);
-            Log.w(VSTTAG, "sxrEnableSeeThrough(" + aEnable + ")");
-            return true;
-        } catch (Throwable t) {
-            Log.w(VSTTAG, "sxrEnableSeeThrough unavailable: " + t);
             return false;
         }
     }
