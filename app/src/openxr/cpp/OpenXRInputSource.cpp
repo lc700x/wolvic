@@ -840,7 +840,8 @@ void OpenXRInputSource::Update(const XrFrameState& frameState, XrSpace localSpac
 
             delegate.SetMode(mIndex, ControllerMode::Device);
             delegate.SetEnabled(mIndex, true);
-            delegate.SetAimEnabled(mIndex, false);
+            // The grip pose is also the fallback aim pose when Qiyu has no pointer action.
+            delegate.SetAimEnabled(mIndex, true);
             delegate.SetCapabilityFlags(mIndex, flags);
             if (renderMode == device::RenderMode::StandAlone) {
                 delegate.SetTransform(mIndex, controllerTransform);

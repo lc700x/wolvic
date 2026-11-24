@@ -764,12 +764,6 @@ struct DeviceDelegateOpenXR::State {
       case XR_SESSION_STATE_STOPPING: {
         VRB_LOG("XR_SESSION_STATE_STOPPING");
         vrReady = false;
-#if defined(QIYU)
-        // On Qiyu a HOME transition can stop the runtime session without
-        // delivering a matching Android destroy immediately. Mark it as a
-        // terminal transition so the native loop cannot remain paused forever.
-        exitRequested = true;
-#endif
         if (session != XR_NULL_HANDLE) {
           // HOME and other system overlays can make teardown return a runtime
           // error. Teardown must remain best-effort so the render thread does

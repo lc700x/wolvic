@@ -111,12 +111,6 @@ CommandCallback(android_app *aApp, int32_t aCmd) {
     case APP_CMD_PAUSE:
       VRB_LOG("APP_CMD_PAUSE");
       if (ctx->mDevice) {
-#if defined(QIYU)
-        // Qiyu's OpenXR runtime can keep the native activity alive in a paused
-        // state after the system HOME transition. Request a real session exit;
-        // the render loop will finish the activity when the request succeeds.
-        ctx->mDevice->ExitApp();
-#endif
         ctx->mDevice->LeaveVR();
       }
       BrowserWorld::Instance().Pause();
@@ -242,13 +236,15 @@ android_main(android_app *aAppState) {
   };
   // If 0 returns immediately without blocking. If negative, waits indefinitely for events.
   auto computeALooperTimeout = [aAppState]() {
-      // A Qiyu HOME/pause can invalidate the XR session while BrowserWorld is
-      // already paused. Keep polling in that case so the exit request is observed
-      // and the native activity is finished instead of blocking in ALooper.
       if (sAppContext->mDevice && sAppContext->mDevice->ShouldExitRenderLoop()) {
           return 0;
       }
-      return BrowserWorld::Instance().IsPaused() && !sAppContext->mDevice->IsInVRMode() && aAppState->destroyRequested == 0 ? -1 : 0;
+      if (BrowserWorld::Instance().IsPaused() && aAppState->destroyRequested == 0) {
+          // OpenXR events are polled outside ALooper; check periodically until
+          // the runtime stops the session, then sleep for Android lifecycle events.
+          return sAppContext->mDevice->IsInVRMode() ? 50 : -1;
+      }
+      return 0;
   };
 
   // EnterVR if the APP_CMD_INIT_WINDOW has been already received. Can be triggered in OpenXR
