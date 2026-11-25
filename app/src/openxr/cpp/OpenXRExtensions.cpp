@@ -15,6 +15,8 @@ PFN_xrLocateHandJointsEXT OpenXRExtensions::sXrLocateHandJointsEXT = nullptr;
 PFN_xrPerfSettingsSetPerformanceLevelEXT OpenXRExtensions::sXrPerfSettingsSetPerformanceLevelEXT = nullptr;
 PFN_xrEnumerateDisplayRefreshRatesFB OpenXRExtensions::sXrEnumerateDisplayRefreshRatesFB = nullptr;
 PFN_xrRequestDisplayRefreshRateFB OpenXRExtensions::sXrRequestDisplayRefreshRateFB = nullptr;
+PFN_xrEnumerateColorSpacesFB OpenXRExtensions::sXrEnumerateColorSpacesFB = nullptr;
+PFN_xrSetColorSpaceFB OpenXRExtensions::sXrSetColorSpaceFB = nullptr;
 PFN_xrCreatePassthroughFB OpenXRExtensions::sXrCreatePassthroughFB = nullptr;
 PFN_xrDestroyPassthroughFB OpenXRExtensions::sXrDestroyPassthroughFB = nullptr;
 PFN_xrCreatePassthroughLayerFB OpenXRExtensions::sXrCreatePassthroughLayerFB = nullptr;
@@ -127,6 +129,21 @@ void OpenXRExtensions::LoadExtensions(XrInstance instance) {
       CHECK_XRCMD(xrGetInstanceProcAddr(instance, "xrRequestDisplayRefreshRateFB",
                                         reinterpret_cast<PFN_xrVoidFunction*>(&sXrRequestDisplayRefreshRateFB)));
   }
+
+#if defined(QIYU)
+  if (IsExtensionSupported(XR_FB_COLOR_SPACE_EXTENSION_NAME)) {
+      const XrResult enumerateResult = xrGetInstanceProcAddr(instance, "xrEnumerateColorSpacesFB",
+                                          reinterpret_cast<PFN_xrVoidFunction*>(&sXrEnumerateColorSpacesFB));
+      const XrResult setResult = xrGetInstanceProcAddr(instance, "xrSetColorSpaceFB",
+                                          reinterpret_cast<PFN_xrVoidFunction*>(&sXrSetColorSpaceFB));
+      if (XR_FAILED(enumerateResult) || XR_FAILED(setResult) ||
+          !sXrEnumerateColorSpacesFB || !sXrSetColorSpaceFB) {
+          sXrEnumerateColorSpacesFB = nullptr;
+          sXrSetColorSpaceFB = nullptr;
+          VRB_WARN("XR_FB_color_space entry points unavailable; keeping runtime default");
+      }
+  }
+#endif
 
     if (IsExtensionSupported(XR_EXT_HAND_TRACKING_EXTENSION_NAME)) {
         CHECK_XRCMD(xrGetInstanceProcAddr(instance, "xrCreateHandTrackerEXT",

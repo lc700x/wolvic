@@ -100,12 +100,10 @@ public class PlatformActivity extends NativeActivity {
 
     @Override
     public void onBackPressed() {
-        queueRunnable(new Runnable() {
-            @Override
-            public void run() {
-                platformExit();
-            }
-        });
+        // Let the Android lifecycle stop the native session and destroy the render thread.
+        // platformExit() only leaves VR on the native SXR fallback, so the app stays alive
+        // without presenting and the render loop may immediately enter VR again.
+        finishAndRemoveTask();
     }
 
     @Override

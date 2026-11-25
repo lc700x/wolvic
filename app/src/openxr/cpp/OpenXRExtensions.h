@@ -29,6 +29,8 @@ namespace crow {
     static PFN_xrPerfSettingsSetPerformanceLevelEXT sXrPerfSettingsSetPerformanceLevelEXT;
     static PFN_xrEnumerateDisplayRefreshRatesFB sXrEnumerateDisplayRefreshRatesFB;
     static PFN_xrRequestDisplayRefreshRateFB sXrRequestDisplayRefreshRateFB;
+    static PFN_xrEnumerateColorSpacesFB sXrEnumerateColorSpacesFB;
+    static PFN_xrSetColorSpaceFB sXrSetColorSpaceFB;
 
     static PFN_xrCreatePassthroughFB sXrCreatePassthroughFB;
     static PFN_xrDestroyPassthroughFB sXrDestroyPassthroughFB;

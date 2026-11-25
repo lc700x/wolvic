@@ -196,6 +196,11 @@ struct DeviceDelegateOpenXR::State {
     if (OpenXRExtensions::IsExtensionSupported(XR_FB_DISPLAY_REFRESH_RATE_EXTENSION_NAME)) {
         extensions.push_back(XR_FB_DISPLAY_REFRESH_RATE_EXTENSION_NAME);
     }
+#if defined(QIYU)
+    if (OpenXRExtensions::IsExtensionSupported(XR_FB_COLOR_SPACE_EXTENSION_NAME)) {
+        extensions.push_back(XR_FB_COLOR_SPACE_EXTENSION_NAME);
+    }
+#endif
 #if defined(OCULUSVR) || defined(PFDMXR)
     if (OpenXRExtensions::IsExtensionSupported(XR_KHR_COMPOSITION_LAYER_EQUIRECT2_EXTENSION_NAME)) {
       extensions.push_back(XR_KHR_COMPOSITION_LAYER_EQUIRECT2_EXTENSION_NAME);
@@ -495,9 +500,27 @@ struct DeviceDelegateOpenXR::State {
   }
 
   float EyeScale() const {
-    // Reverted per user: restored full recommended eye resolution on all devices.
-    // (0.85x Qiyu scale removed: sharper geometry, but SXR warp starvation may return.)
-    return 1.0f;
+    const bool isQiyu = deviceType == device::Qiyu3 || deviceType == device::QiyuDream ||
+                        deviceType == device::QiyuDreamPro || deviceType == device::QiyuMix ||
+                        deviceType == device::QiyuX;
+    if (!isQiyu) {
+      return 1.0f;
+    }
+
+    // SuperMoon's default 2160 render target is 1.5x the runtime recommendation.
+    // Respect each eye's maximum so the runtime never receives an oversized swapchain.
+    float scale = 1.5f;
+    for (const auto& view : viewConfig) {
+      if (view.recommendedImageRectWidth > 0 && view.maxImageRectWidth > 0) {
+        scale = std::min(scale, static_cast<float>(view.maxImageRectWidth) /
+                                    view.recommendedImageRectWidth);
+      }
+      if (view.recommendedImageRectHeight > 0 && view.maxImageRectHeight > 0) {
+        scale = std::min(scale, static_cast<float>(view.maxImageRectHeight) /
+                                    view.recommendedImageRectHeight);
+      }
+    }
+    return scale;
   }
 
   void InitializeImmersiveDisplay() {
@@ -506,8 +529,13 @@ struct DeviceDelegateOpenXR::State {
 
     immersiveDisplay->SetDeviceName(systemProperties.systemName);
     const float scale = EyeScale();
-    immersiveDisplay->SetEyeResolution((uint32_t)(viewConfig.front().recommendedImageRectWidth * scale),
-                                       (uint32_t)(viewConfig.front().recommendedImageRectHeight * scale));
+    const uint32_t eyeWidth = static_cast<uint32_t>(viewConfig.front().recommendedImageRectWidth * scale);
+    const uint32_t eyeHeight = static_cast<uint32_t>(viewConfig.front().recommendedImageRectHeight * scale);
+    immersiveDisplay->SetEyeResolution(eyeWidth, eyeHeight);
+    VRB_LOG("OpenXR eye target: %ux%u per eye (recommended %ux%u, scale %.3f)",
+            eyeWidth, eyeHeight,
+            viewConfig.front().recommendedImageRectWidth,
+            viewConfig.front().recommendedImageRectHeight, scale);
     immersiveDisplay->SetSittingToStandingTransform(vrb::Matrix::Translation(kAverageHeight));
     auto toDeviceBlendModes = [](std::vector<XrEnvironmentBlendMode> aOpenXRBlendModes) {
         std::vector<device::BlendMode> deviceBlendModes;
@@ -1760,6 +1788,52 @@ DeviceDelegateOpenXR::EnterVR(const crow::BrowserEGLContext& aEGLContext) {
   CHECK(m.session != XR_NULL_HANDLE);
   m.exitRequested = false;
   VRB_LOG("OpenXR session created succesfully");
+
+#if defined(QIYU)
+  if (OpenXRExtensions::IsExtensionSupported(XR_FB_COLOR_SPACE_EXTENSION_NAME) &&
+      OpenXRExtensions::sXrEnumerateColorSpacesFB && OpenXRExtensions::sXrSetColorSpaceFB) {
+    uint32_t colorSpaceCount = 0;
+    XrResult colorSpaceResult = OpenXRExtensions::sXrEnumerateColorSpacesFB(
+        m.session, 0, &colorSpaceCount, nullptr);
+    if (XR_FAILED(colorSpaceResult)) {
+      VRB_WARN("Could not enumerate Qiyu display color spaces: %d",
+               static_cast<int>(colorSpaceResult));
+    } else if (colorSpaceCount == 0) {
+      VRB_LOG("Qiyu runtime returned no display color spaces; keeping its default");
+    } else {
+      std::vector<XrColorSpaceFB> colorSpaces(colorSpaceCount);
+      colorSpaceResult = OpenXRExtensions::sXrEnumerateColorSpacesFB(
+          m.session, colorSpaceCount, &colorSpaceCount, colorSpaces.data());
+      if (XR_FAILED(colorSpaceResult)) {
+        VRB_WARN("Could not read Qiyu display color spaces: %d",
+                 static_cast<int>(colorSpaceResult));
+      } else if (colorSpaceCount == 0) {
+        VRB_LOG("Qiyu runtime returned an empty display color-space list; keeping its default");
+      } else {
+        bool supportsRec709 = false;
+        for (uint32_t i = 0; i < colorSpaceCount; ++i) {
+          if (colorSpaces[i] == XR_COLOR_SPACE_REC709_FB) {
+            supportsRec709 = true;
+            break;
+          }
+        }
+
+        if (supportsRec709) {
+          colorSpaceResult = OpenXRExtensions::sXrSetColorSpaceFB(
+              m.session, XR_COLOR_SPACE_REC709_FB);
+          if (XR_SUCCEEDED(colorSpaceResult)) {
+            VRB_LOG("Qiyu display color space set to REC709");
+          } else {
+            VRB_WARN("Failed to set Qiyu display color space to REC709: %d",
+                     static_cast<int>(colorSpaceResult));
+          }
+        } else {
+          VRB_LOG("Qiyu runtime does not expose REC709; keeping its default color space");
+        }
+      }
+    }
+  }
+#endif
 
   m.UpdateSpaces();
   m.InitializeViews();
