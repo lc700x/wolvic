@@ -133,7 +133,7 @@ def qiyuControllerBridge = qiyuBridgeProperty == null ||
 // passthrough is routed through the system see-through service instead.
 
 // Version names for Gecko and Chromium releases.
-def GECKO_VERSION_NAME = '1.11.29'
+def GECKO_VERSION_NAME = '1.11.30'
 def CHROMIUM_VERSION_NAME = '1.5'
 
 android {

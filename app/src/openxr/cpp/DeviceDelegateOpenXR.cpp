@@ -1195,7 +1195,7 @@ DeviceDelegateOpenXR::StartFrame(const FramePrediction aPrediction) {
     return;
   }
 
-#if OCULUSVR || PICOXR || PFDMXR
+#if OCULUSVR || PICOXR || PFDMXR || QIYU
   // Fix brigthness issue.
   glDisable(GL_FRAMEBUFFER_SRGB_EXT);
 #endif
